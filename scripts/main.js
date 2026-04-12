@@ -710,30 +710,61 @@ function animateStar(canvas) {
 
 // ── DRUG IMAGE ───────────────────────────────────────────────────────────────
 
-// Strip salt forms and conjunctions so RxImage can match the active ingredient.
-// "Omeprazole-Sodium Bicarbonate" → "omeprazole"
-// "Atorvastatin Calcium" → "atorvastatin"
-function simplifyDrugName(fullName) {
-    return fullName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
+// Use DailyMed (NIH) to fetch pill images by NDC or drug name.
+// RxImage was retired — DailyMed is the maintained replacement.
+async function fetchDrugImage(ndc, drugName) {
+    // Strategy 1: look up by NDC → get SPL setId → get media images
+    if (ndc) {
+        try {
+            const r1 = await fetch(
+                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?ndc=${encodeURIComponent(ndc)}`
+            );
+            if (r1.ok) {
+                const d1 = await r1.json();
+                const setId = d1?.data?.[0]?.setid;
+                if (setId) {
+                    const imgUrl = await fetchDailyMedImage(setId);
+                    if (imgUrl) return imgUrl;
+                }
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    // Strategy 2: search by drug name
+    if (drugName) {
+        try {
+            const simpleName = drugName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
+            const r2 = await fetch(
+                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?drug_name=${encodeURIComponent(simpleName)}&pagesize=1`
+            );
+            if (r2.ok) {
+                const d2 = await r2.json();
+                const setId = d2?.data?.[0]?.setid;
+                if (setId) {
+                    const imgUrl = await fetchDailyMedImage(setId);
+                    if (imgUrl) return imgUrl;
+                }
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    return null;
 }
 
-async function fetchDrugImage(ndc, drugName) {
-    const urls = [
-        // Try NDC first — most precise
-        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?ndc=${encodeURIComponent(ndc)}&resolution=600`,
-        // Fall back to simplified active ingredient name
-        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?name=${encodeURIComponent(simplifyDrugName(drugName))}&resolution=600`,
-    ];
-    for (const url of urls) {
-        try {
-            const r = await fetch(url);
-            if (!r.ok) continue;
-            const d = await r.json();
-            const imageUrl = d?.nlmRxImages?.[0]?.imageUrl;
-            if (imageUrl) return imageUrl;
-        } catch (e) { continue; }
-    }
-    return null;
+async function fetchDailyMedImage(setId) {
+    try {
+        const r = await fetch(
+            `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls/${setId}/media.json`
+        );
+        if (!r.ok) return null;
+        const d = await r.json();
+        const media = d?.data;
+        if (!Array.isArray(media) || !media.length) return null;
+        // Prefer the first image file
+        const img = media.find(m => /\.(jpg|jpeg|png|gif)$/i.test(m.name || m.url || ''));
+        const target = img || media[0];
+        return target?.url || null;
+    } catch (e) { return null; }
 }
 
 // Neutral grey pill icon — shown immediately and kept if no real image loads
@@ -870,11 +901,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
         genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Always use quantity 30 for the comparison so prices are a fair per-month figure
-    const genericPharmacies = await fetchPharmacies({
+    // Use the user's search quantity for per-card generic badges (apples-to-apples
+    // with the card prices), but always use quantity 30 for the banner's monthly
+    // comparison so both brand and generic come from real API prices at qty 30.
+    const userQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
+
+    // Fetch generic at the user's quantity for per-card badges
+    const genericPharmaciesForCards = await fetchPharmacies({
         memberNumber: '01',
         ndc:          match.Ndc,
-        quantity:     30,
+        quantity:     userQuantity,
         daysSupply:   3,
         groupNum:     'TPD001',
         zip:          userZip,
@@ -882,26 +918,40 @@ async function showGenericAlternativesBanner(selectedDrug) {
         maxRecords:   3000,
     });
 
-    // Find the cheapest generic price
-    const genericPrices = (genericPharmacies || [])
-        .map(p => parseFloat(p.Pricing?.PatientPay))
-        .filter(p => !isNaN(p) && p > 0);
-    const lowestGenericPrice = genericPrices.length ? Math.min(...genericPrices) : null;
-
-    // Inject per-pharmacy generic prices onto each visible card
-    if (genericPharmacies?.length) {
-        injectGenericPricesOnCards(genericPharmacies, selectedDrug.MedDrugName, altName);
+    // Inject per-pharmacy generic prices onto each visible card (same qty basis)
+    if (genericPharmaciesForCards?.length) {
+        injectGenericPricesOnCards(genericPharmaciesForCards, selectedDrug.MedDrugName, altName);
     }
 
-    // Build savings display strings
+    // For the banner, fetch both brand and generic at qty 30 for a true monthly
+    // comparison — no linear scaling, real API prices for a 30-day supply.
+    const monthlyQty = 30;
+    const needsSeparateFetch = userQuantity !== monthlyQty;
+
+    const [brandMonthly, genericMonthly] = await Promise.all([
+        needsSeparateFetch
+            ? fetchPharmacies({ memberNumber: '01', ndc: selectedDrug.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
+            : Promise.resolve(null),   // reuse currentLowestBrandPrice from the main search
+        needsSeparateFetch
+            ? fetchPharmacies({ memberNumber: '01', ndc: match.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
+            : Promise.resolve(genericPharmaciesForCards),
+    ]);
+
+    const lowestPrice = (pharmacies) => {
+        const prices = (pharmacies || [])
+            .map(p => parseFloat(p.Pricing?.PatientPay))
+            .filter(p => !isNaN(p) && p > 0);
+        return prices.length ? Math.min(...prices) : null;
+    };
+
+    const brandPrice30   = needsSeparateFetch ? lowestPrice(brandMonthly) : currentLowestBrandPrice;
+    const genericPrice30 = lowestPrice(genericMonthly);
+
     const fmt = n => '$' + n.toFixed(2);
-    // Normalise brand price to 30-day supply so comparison is apples-to-apples
-    const brandPrice30 = (currentLowestBrandPrice != null && currentBrandSearchQuantity > 0)
-        ? currentLowestBrandPrice * 30 / currentBrandSearchQuantity : null;
-    const brandStr   = brandPrice30      != null ? fmt(brandPrice30)      : null;
-    const genericStr = lowestGenericPrice != null ? fmt(lowestGenericPrice) : null;
-    const saving     = (brandPrice30 != null && lowestGenericPrice != null)
-        ? brandPrice30 - lowestGenericPrice : null;
+    const brandStr   = brandPrice30   != null ? fmt(brandPrice30)   : null;
+    const genericStr = genericPrice30 != null ? fmt(genericPrice30) : null;
+    const saving     = (brandPrice30 != null && genericPrice30 != null)
+        ? brandPrice30 - genericPrice30 : null;
     const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
 
     // Inject keyframe animation once
