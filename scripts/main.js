@@ -37,8 +37,6 @@ let currentSelectedNpi = null;
 let currentSelectedPosition = null;
 let currentSelectedIsFeatured = false;
 let isRecentSearch = false;
-let currentLowestBrandPrice = null;
-let currentBrandSearchQuantity = 30;
 const SESSION_START = new Date();
 
 const DEVICE_TYPE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
@@ -722,102 +720,6 @@ function animateStar(canvas) {
     return () => cancelAnimationFrame(rafId);
 }
 
-// ── DRUG IMAGE ───────────────────────────────────────────────────────────────
-
-// Use DailyMed (NIH) to fetch pill images by NDC or drug name.
-// RxImage was retired — DailyMed is the maintained replacement.
-async function fetchDrugImage(ndc, drugName) {
-    // Strategy 1: look up by NDC → get SPL setId → get media images
-    if (ndc) {
-        try {
-            const r1 = await fetch(
-                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?ndc=${encodeURIComponent(ndc)}`
-            );
-            if (r1.ok) {
-                const d1 = await r1.json();
-                const setId = d1?.data?.[0]?.setid;
-                if (setId) {
-                    const imgUrl = await fetchDailyMedImage(setId);
-                    if (imgUrl) return imgUrl;
-                }
-            }
-        } catch (e) { /* fall through */ }
-    }
-
-    // Strategy 2: search by drug name
-    if (drugName) {
-        try {
-            const simpleName = drugName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
-            const r2 = await fetch(
-                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?drug_name=${encodeURIComponent(simpleName)}&pagesize=1`
-            );
-            if (r2.ok) {
-                const d2 = await r2.json();
-                const setId = d2?.data?.[0]?.setid;
-                if (setId) {
-                    const imgUrl = await fetchDailyMedImage(setId);
-                    if (imgUrl) return imgUrl;
-                }
-            }
-        } catch (e) { /* fall through */ }
-    }
-
-    return null;
-}
-
-async function fetchDailyMedImage(setId) {
-    try {
-        const r = await fetch(
-            `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls/${setId}/media.json`
-        );
-        if (!r.ok) return null;
-        const d = await r.json();
-        const media = d?.data;
-        if (!Array.isArray(media) || !media.length) return null;
-        // Prefer the first image file
-        const img = media.find(m => /\.(jpg|jpeg|png|gif)$/i.test(m.name || m.url || ''));
-        const target = img || media[0];
-        return target?.url || null;
-    } catch (e) { return null; }
-}
-
-// Neutral grey pill icon — shown immediately and kept if no real image loads
-const PILL_FALLBACK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect x="8" y="24" width="48" height="16" rx="8" fill="#e0ddd6"/><rect x="8" y="24" width="24" height="16" rx="8" fill="#c8c4bc"/><line x1="32" y1="24" x2="32" y2="40" stroke="#b4b0a8" stroke-width="1.5"/></svg>`;
-
-async function loadDrugImage(ndc, drugName) {
-    let container = document.getElementById('drug-img-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'drug-img-container';
-        container.style.cssText = [
-            'width:64px', 'height:64px', 'border-radius:10px',
-            'overflow:hidden', 'background:#f4f3f0',
-            'border:1px solid #e0ddd6', 'flex-shrink:0',
-            'display:flex', 'align-items:center', 'justify-content:center',
-            'padding:6px', 'box-sizing:border-box'
-        ].join(';');
-        const nameEl = document.getElementById('selected-drug-name');
-        if (nameEl?.parentElement) {
-            nameEl.parentElement.style.cssText += ';display:flex;align-items:center;gap:12px;';
-            nameEl.parentElement.insertBefore(container, nameEl);
-        }
-    }
-
-    // Show pill icon immediately while the real image loads
-    container.innerHTML = PILL_FALLBACK_SVG;
-
-    const imageUrl = await fetchDrugImage(ndc, drugName);
-    if (imageUrl) {
-        const img = document.createElement('img');
-        img.src   = imageUrl;
-        img.alt   = drugName;
-        img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
-        img.onerror = () => { container.innerHTML = PILL_FALLBACK_SVG; };
-        container.innerHTML = '';
-        container.appendChild(img);
-    }
-}
-
 // ── GENERIC ALTERNATIVES ────────────────────────────────────────────────────
 
 // Use RxNorm (NIH) to check if a drug name is a brand name and return its
@@ -873,36 +775,6 @@ async function showGenericAlternativesBanner(selectedDrug) {
         genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Fetch both brand and generic at qty 30 for an apples-to-apples comparison.
-    // We use real API prices — no linear scaling.
-    const compareQty = 30;
-    const userQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
-    const needsBrandFetch = userQuantity !== compareQty;
-
-    const [brandResult, genericResult] = await Promise.all([
-        needsBrandFetch
-            ? fetchPharmacies({ memberNumber: '01', ndc: selectedDrug.Ndc, quantity: compareQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
-            : Promise.resolve(null),
-        fetchPharmacies({ memberNumber: '01', ndc: match.Ndc, quantity: compareQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 }),
-    ]);
-
-    const lowestPrice = (pharmacies) => {
-        const prices = (pharmacies || [])
-            .map(p => parseFloat(p.Pricing?.PatientPay))
-            .filter(p => !isNaN(p) && p > 0);
-        return prices.length ? Math.min(...prices) : null;
-    };
-
-    const brandPrice   = needsBrandFetch ? lowestPrice(brandResult) : currentLowestBrandPrice;
-    const genericPrice = lowestPrice(genericResult);
-
-    const fmt = n => '$' + n.toFixed(2);
-    const brandStr   = brandPrice   != null ? fmt(brandPrice)   : null;
-    const genericStr = genericPrice != null ? fmt(genericPrice) : null;
-    const saving     = (brandPrice != null && genericPrice != null)
-        ? brandPrice - genericPrice : null;
-    const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
-
     // Inject keyframe animation once
     if (!document.getElementById('generic-alt-style')) {
         const style = document.createElement('style');
@@ -931,26 +803,10 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:6px;">
             Generic alternative available
           </div>
-          ${brandStr && genericStr ? `
-          <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
-            <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
-              <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
-              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/30 tablets</span></span>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
-              <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
-              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/30 tablets</span></span>
-            </div>
-            ${savingStr ? `
-            <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
-              <span style="font-size:13px;font-weight:600;color:#1a5c39;">You could save</span>
-              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/30 tablets</span>
-            </div>` : ''}
-          </div>` : `
           <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
             <strong>${altName}</strong> is a generic version of
             <strong>${selectedDrug.MedDrugName}</strong> and may cost significantly less.
-          </div>`}
+          </div>
           <button id="generic-alt-btn" style="
             margin-top:10px;background:#2a7a4f;color:#fff;border:none;
             border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;
@@ -1070,8 +926,6 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     const filteredPharmacies = removeOutliersUsingSD(validPharmacies, 1.5);
     filteredPharmacies.sort((a, b) => a.PatientPay - b.PatientPay);
-    currentLowestBrandPrice = filteredPharmacies[0]?.PatientPay || null;
-    currentBrandSearchQuantity = quantity;
 
     if (filteredPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found after filtering outliers.';
@@ -1108,8 +962,6 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     document.getElementById('selected-dosage').textContent    = resolvedDosage;
     document.getElementById('selected-quantity').textContent  = quantity;
     document.getElementById('selected-form').textContent      = resolvedForm;
-
-    loadDrugImage(selectedDrug?.Ndc || '', resolvedDrugName);
 
     const firstPharmacy           = displayPharmacies[0];
     const firstPharmacyName       = firstPharmacy ? toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(firstPharmacy.Pharmacy?.Name || '')) : null;
