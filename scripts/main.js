@@ -810,10 +810,27 @@ async function showGenericAlternativesBanner(selectedDrug) {
     pharmacyListDiv.insertAdjacentElement('beforebegin', banner);
 
     document.getElementById('generic-alt-btn').addEventListener('click', () => {
-        inputField.value = altName;
         banner.remove();
-        inputField.dispatchEvent(new Event('input'));
-        inputField.focus();
+        suggestionsDiv.innerHTML = '';
+
+        // Populate shared state with the already-fetched generic drug data
+        inputField.value = match.MedDrugName;
+        drugData = genericDrugs;
+        currentNDC = match.Ndc;
+
+        // Build dosage and form dropdowns from all variants of this generic
+        const dSet = new Set(), fSet = new Set();
+        genericDrugs
+            .filter(d => d.MedDrugName === match.MedDrugName)
+            .forEach(d => { dSet.add(`${d.MedStrength} ${d.Uom}`); fSet.add(d.DosageForm); });
+        renderDropdown(dosageDropdown, [...dSet]);
+        renderDropdown(formDropdown,   [...fSet]);
+
+        const packSize = parseInt(match.MedPackSize) || 30;
+        document.getElementById('quantity').value = packSize;
+
+        // Run the search immediately — no need to go through the suggestion step
+        handleDrugSearch(match.MedDrugName, `${match.MedStrength} ${match.Uom}`, match.DosageForm, packSize);
     });
 }
 
