@@ -17,6 +17,28 @@ if (isFirstLoading) {
 }
 
 let drugData = [];
+
+// Lock dosage/form/quantity/search until a prescription is selected
+const quantityField = document.getElementById('quantity');
+const searchButton  = document.getElementById('searchButton');
+const lockableFields = [dosageDropdown, formDropdown, quantityField, searchButton];
+
+function updateFieldLock() {
+    const hasDrug = inputField.value.trim().length > 0 && drugData.length > 0;
+    lockableFields.forEach(f => {
+        if (!f) return;
+        f.disabled = !hasDrug;
+        f.style.opacity = hasDrug ? '1' : '0.4';
+        f.style.pointerEvents = hasDrug ? '' : 'none';
+    });
+}
+// Disable on load
+lockableFields.forEach(f => {
+    if (!f) return;
+    f.disabled = true;
+    f.style.opacity = '0.4';
+    f.style.pointerEvents = 'none';
+});
 let currentNDC = '';
 let recentSearches = [];
 let userZip = null;
@@ -456,6 +478,7 @@ const recentSearchesDataFetch = async (query, drugDetails) => {
                 renderDropdown(formDropdown,   [...selectedDrugForms],   drugDetails.forms[0]);
                 const selectedQuantity = storedQuantity || drugDetails.Quantity || [...selectedDrugQuantities][0] || 30;
                 document.getElementById('quantity').value = selectedQuantity;
+                updateFieldLock();
                 handleDrugSearch(drugDetails?.overallData?.MedDrugName, drugDetails.dosages[0], drugDetails.forms[0], selectedQuantity);
             }
         }
@@ -550,6 +573,7 @@ const triggerInputFieldChange = async (event) => {
                     const packSize = pickBestPackSize(variants);
                     document.getElementById('quantity').value = packSize;
                     suggestionsDiv.innerHTML = '';
+                    updateFieldLock();
                 });
                 suggestionsDiv.appendChild(option);
             }
@@ -560,7 +584,14 @@ const triggerInputFieldChange = async (event) => {
 };
 
 const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 500);
-inputField.addEventListener('input', debouncedTriggerInputFieldChange);
+inputField.addEventListener('input', (e) => {
+    debouncedTriggerInputFieldChange(e);
+    // Re-lock fields if the user clears the prescription
+    if (!inputField.value.trim()) {
+        drugData = [];
+        updateFieldLock();
+    }
+});
 
 // Close suggestions when clicking outside
 document.addEventListener('click', (e) => {
@@ -885,6 +916,7 @@ async function showGenericAlternativesBanner(selectedDrug) {
         const genVariants = genericDrugs.filter(d => d.MedDrugName === match.MedDrugName);
         const packSize = pickBestPackSize(genVariants);
         document.getElementById('quantity').value = packSize;
+        updateFieldLock();
 
         // Run the search immediately — no need to go through the suggestion step
         handleDrugSearch(match.MedDrugName, `${match.MedStrength} ${match.Uom}`, match.DosageForm, packSize);
