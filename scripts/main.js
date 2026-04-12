@@ -710,30 +710,61 @@ function animateStar(canvas) {
 
 // ── DRUG IMAGE ───────────────────────────────────────────────────────────────
 
-// Strip salt forms and conjunctions so RxImage can match the active ingredient.
-// "Omeprazole-Sodium Bicarbonate" → "omeprazole"
-// "Atorvastatin Calcium" → "atorvastatin"
-function simplifyDrugName(fullName) {
-    return fullName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
+// Use DailyMed (NIH) to fetch pill images by NDC or drug name.
+// RxImage was retired — DailyMed is the maintained replacement.
+async function fetchDrugImage(ndc, drugName) {
+    // Strategy 1: look up by NDC → get SPL setId → get media images
+    if (ndc) {
+        try {
+            const r1 = await fetch(
+                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?ndc=${encodeURIComponent(ndc)}`
+            );
+            if (r1.ok) {
+                const d1 = await r1.json();
+                const setId = d1?.data?.[0]?.setid;
+                if (setId) {
+                    const imgUrl = await fetchDailyMedImage(setId);
+                    if (imgUrl) return imgUrl;
+                }
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    // Strategy 2: search by drug name
+    if (drugName) {
+        try {
+            const simpleName = drugName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
+            const r2 = await fetch(
+                `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?drug_name=${encodeURIComponent(simpleName)}&pagesize=1`
+            );
+            if (r2.ok) {
+                const d2 = await r2.json();
+                const setId = d2?.data?.[0]?.setid;
+                if (setId) {
+                    const imgUrl = await fetchDailyMedImage(setId);
+                    if (imgUrl) return imgUrl;
+                }
+            }
+        } catch (e) { /* fall through */ }
+    }
+
+    return null;
 }
 
-async function fetchDrugImage(ndc, drugName) {
-    const urls = [
-        // Try NDC first — most precise
-        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?ndc=${encodeURIComponent(ndc)}&resolution=600`,
-        // Fall back to simplified active ingredient name
-        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?name=${encodeURIComponent(simplifyDrugName(drugName))}&resolution=600`,
-    ];
-    for (const url of urls) {
-        try {
-            const r = await fetch(url);
-            if (!r.ok) continue;
-            const d = await r.json();
-            const imageUrl = d?.nlmRxImages?.[0]?.imageUrl;
-            if (imageUrl) return imageUrl;
-        } catch (e) { continue; }
-    }
-    return null;
+async function fetchDailyMedImage(setId) {
+    try {
+        const r = await fetch(
+            `https://dailymed.nlm.nih.gov/dailymed/services/v2/spls/${setId}/media.json`
+        );
+        if (!r.ok) return null;
+        const d = await r.json();
+        const media = d?.data;
+        if (!Array.isArray(media) || !media.length) return null;
+        // Prefer the first image file
+        const img = media.find(m => /\.(jpg|jpeg|png|gif)$/i.test(m.name || m.url || ''));
+        const target = img || media[0];
+        return target?.url || null;
+    } catch (e) { return null; }
 }
 
 // Neutral grey pill icon — shown immediately and kept if no real image loads
@@ -870,12 +901,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
         genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Use the same quantity as the brand search so prices are directly comparable
-    const searchQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
-    const genericPharmacies = await fetchPharmacies({
+    // Use the user's search quantity for per-card generic badges (apples-to-apples
+    // with the card prices), but always use quantity 30 for the banner's monthly
+    // comparison so both brand and generic come from real API prices at qty 30.
+    const userQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
+
+    // Fetch generic at the user's quantity for per-card badges
+    const genericPharmaciesForCards = await fetchPharmacies({
         memberNumber: '01',
         ndc:          match.Ndc,
-        quantity:     searchQuantity,
+        quantity:     userQuantity,
         daysSupply:   3,
         groupNum:     'TPD001',
         zip:          userZip,
@@ -883,27 +918,41 @@ async function showGenericAlternativesBanner(selectedDrug) {
         maxRecords:   3000,
     });
 
-    // Find the cheapest generic price
-    const genericPrices = (genericPharmacies || [])
-        .map(p => parseFloat(p.Pricing?.PatientPay))
-        .filter(p => !isNaN(p) && p > 0);
-    const lowestGenericPrice = genericPrices.length ? Math.min(...genericPrices) : null;
-
-    // Inject per-pharmacy generic prices onto each visible card
-    if (genericPharmacies?.length) {
-        injectGenericPricesOnCards(genericPharmacies, selectedDrug.MedDrugName, altName);
+    // Inject per-pharmacy generic prices onto each visible card (same qty basis)
+    if (genericPharmaciesForCards?.length) {
+        injectGenericPricesOnCards(genericPharmaciesForCards, selectedDrug.MedDrugName, altName);
     }
 
-    // Build savings display strings — both brand and generic use the same quantity
-    // so no normalisation is needed; prices are directly comparable.
+    // For the banner, fetch both brand and generic at qty 30 for a true monthly
+    // comparison — no linear scaling, real API prices for a 30-day supply.
+    const monthlyQty = 30;
+    const needsSeparateFetch = userQuantity !== monthlyQty;
+
+    const [brandMonthly, genericMonthly] = await Promise.all([
+        needsSeparateFetch
+            ? fetchPharmacies({ memberNumber: '01', ndc: selectedDrug.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
+            : Promise.resolve(null),   // reuse currentLowestBrandPrice from the main search
+        needsSeparateFetch
+            ? fetchPharmacies({ memberNumber: '01', ndc: match.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
+            : Promise.resolve(genericPharmaciesForCards),
+    ]);
+
+    const lowestPrice = (pharmacies) => {
+        const prices = (pharmacies || [])
+            .map(p => parseFloat(p.Pricing?.PatientPay))
+            .filter(p => !isNaN(p) && p > 0);
+        return prices.length ? Math.min(...prices) : null;
+    };
+
+    const brandPrice30   = needsSeparateFetch ? lowestPrice(brandMonthly) : currentLowestBrandPrice;
+    const genericPrice30 = lowestPrice(genericMonthly);
+
     const fmt = n => '$' + n.toFixed(2);
-    const brandPrice  = currentLowestBrandPrice != null ? currentLowestBrandPrice : null;
-    const brandStr    = brandPrice         != null ? fmt(brandPrice)         : null;
-    const genericStr  = lowestGenericPrice  != null ? fmt(lowestGenericPrice)  : null;
-    const saving      = (brandPrice != null && lowestGenericPrice != null)
-        ? brandPrice - lowestGenericPrice : null;
-    const savingStr   = saving != null && saving > 0 ? fmt(saving) : null;
-    const qtyLabel    = searchQuantity === 30 ? '/mo' : ` for ${searchQuantity}`;
+    const brandStr   = brandPrice30   != null ? fmt(brandPrice30)   : null;
+    const genericStr = genericPrice30 != null ? fmt(genericPrice30) : null;
+    const saving     = (brandPrice30 != null && genericPrice30 != null)
+        ? brandPrice30 - genericPrice30 : null;
+    const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
 
     // Inject keyframe animation once
     if (!document.getElementById('generic-alt-style')) {
@@ -937,16 +986,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
-              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">${qtyLabel}</span></span>
+              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
-              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">${qtyLabel}</span></span>
+              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
             </div>
             ${savingStr ? `
             <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
               <span style="font-size:13px;font-weight:600;color:#1a5c39;">You could save</span>
-              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}${qtyLabel}</span>
+              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/mo</span>
             </div>` : ''}
           </div>` : `
           <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
