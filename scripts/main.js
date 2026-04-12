@@ -1,4 +1,3 @@
-<script>
 const apiKey = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
 const baseUrl = 'https://phoenixapi.rxlogic.com';
 const XANO_BASE = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh';
@@ -1199,4 +1198,3 @@ function hideLoader() {
         } catch (err) { throw err; }
     };
 })();
-</script>
