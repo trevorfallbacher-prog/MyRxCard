@@ -745,9 +745,48 @@ async function getGenericForBrand(drugName) {
 // Show a dismissible banner above the pharmacy list when a cheaper generic
 // alternative appears to be available for the selected brand-name drug.
 // Runs async in the background so it never delays the pharmacy list render.
+function injectGenericPricesOnCards(genericPharmacies, brandDrugName, genericDrugName) {
+    // Clear any previous injections
+    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
+
+    // Build NPI → cheapest generic price map
+    const priceByNpi = new Map();
+    for (const p of genericPharmacies) {
+        const npi = String(p.Pharmacy?.Npi || '');
+        const price = parseFloat(p.Pricing?.PatientPay);
+        if (npi && !isNaN(price) && price > 0) {
+            if (!priceByNpi.has(npi) || price < priceByNpi.get(npi)) {
+                priceByNpi.set(npi, price);
+            }
+        }
+    }
+
+    document.querySelectorAll('.pharmacy-card').forEach(card => {
+        const npi = String(card.dataset.npi || '');
+        const brandPrice = parseFloat((card.dataset.price || '').replace(/,/g, ''));
+        const genericPrice = priceByNpi.get(npi);
+        if (!genericPrice || isNaN(brandPrice)) return;
+
+        const saving = brandPrice - genericPrice;
+        const badge = document.createElement('div');
+        badge.className = 'generic-price-badge';
+        badge.style.cssText = [
+            'position:absolute', 'top:10px', 'right:12px',
+            'text-align:right', 'line-height:1.3'
+        ].join(';');
+        badge.innerHTML = `
+            <div style="font-size:11px;color:#9a9a92;">${genericDrugName}: $${genericPrice.toFixed(2)}</div>
+            ${saving > 0.01 ? `<div style="font-size:10px;font-weight:600;color:#2a7a4f;">save $${saving.toFixed(2)}</div>` : ''}
+        `;
+        card.style.position = 'relative';
+        card.appendChild(badge);
+    });
+}
+
 async function showGenericAlternativesBanner(selectedDrug) {
     const existing = document.getElementById('generic-alt-banner');
     if (existing) existing.remove();
+    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
 
     // RxNorm confirms brand status and returns the generic name — returns null
     // for generics, salts, ingredients, etc. so the banner never fires falsely.
@@ -779,6 +818,11 @@ async function showGenericAlternativesBanner(selectedDrug) {
         .map(p => parseFloat(p.Pricing?.PatientPay))
         .filter(p => !isNaN(p) && p > 0);
     const lowestGenericPrice = genericPrices.length ? Math.min(...genericPrices) : null;
+
+    // Inject per-pharmacy generic prices onto each visible card
+    if (genericPharmacies?.length) {
+        injectGenericPricesOnCards(genericPharmacies, selectedDrug.MedDrugName, altName);
+    }
 
     // Build savings display strings
     const fmt = n => '$' + n.toFixed(2);
