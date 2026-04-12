@@ -28,17 +28,10 @@ function updateFieldLock() {
     lockableFields.forEach(f => {
         if (!f) return;
         f.disabled = !hasDrug;
-        f.style.opacity = hasDrug ? '1' : '0.4';
-        f.style.pointerEvents = hasDrug ? '' : 'none';
     });
 }
 // Disable on load
-lockableFields.forEach(f => {
-    if (!f) return;
-    f.disabled = true;
-    f.style.opacity = '0.4';
-    f.style.pointerEvents = 'none';
-});
+lockableFields.forEach(f => { if (f) f.disabled = true; });
 let currentNDC = '';
 let recentSearches = [];
 let userZip = null;
@@ -634,8 +627,14 @@ function updateAllFloatLabels() {
     field.addEventListener('blur',  () => updateFloatLabel(field));
     field.addEventListener('input', () => updateFloatLabel(field));
     field.addEventListener('change',() => updateFloatLabel(field));
-    // Remove placeholder text so it doesn't show through
-    if (field.tagName === 'INPUT') field.setAttribute('placeholder', ' ');
+    // Remove placeholder entirely so it can't conflict with floating labels
+    if (field.tagName === 'INPUT') {
+        field.removeAttribute('placeholder');
+        // Guard: if anything tries to re-add the placeholder attribute, strip it
+        new MutationObserver(() => {
+            if (field.hasAttribute('placeholder')) field.removeAttribute('placeholder');
+        }).observe(field, { attributes: true, attributeFilter: ['placeholder'] });
+    }
 
     // Intercept programmatic .value = ... so labels always stay in sync
     const proto = Object.getPrototypeOf(field);

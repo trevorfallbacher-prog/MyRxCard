@@ -59,12 +59,33 @@
     }
 
     .form-group input:disabled,
-    .form-group select:disabled,
+    .form-group select:disabled {
+      background: #e8eaed !important;
+      border-color: #d1d5db !important;
+      color: #9ca0a8 !important;
+      cursor: not-allowed !important;
+      opacity: 1 !important;
+    }
+
+    .form-group input:disabled ~ label,
+    .form-group select:disabled ~ label,
+    .form-group:has(input:disabled) label,
+    .form-group:has(select:disabled) label {
+      color: #b0b4bc !important;
+    }
+
     #searchButton:disabled {
-      background: #f5f6f8;
-      border-color: #e8eaed;
-      color: #b0b4bc;
-      cursor: not-allowed;
+      background: #c8ccd1 !important;
+      color: #f0f2f5 !important;
+      cursor: not-allowed !important;
+      box-shadow: none !important;
+      transform: none !important;
+      opacity: 1 !important;
+    }
+
+    #searchButton:disabled:hover {
+      transform: none !important;
+      box-shadow: none !important;
     }
 
     .form-group input:focus,
