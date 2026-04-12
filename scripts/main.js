@@ -38,6 +38,7 @@ let currentSelectedPosition = null;
 let currentSelectedIsFeatured = false;
 let isRecentSearch = false;
 let currentLowestBrandPrice = null;
+let currentBrandSearchQuantity = 30;
 const SESSION_START = new Date();
 
 const DEVICE_TYPE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
@@ -796,16 +797,19 @@ async function showGenericAlternativesBanner(selectedDrug) {
     const genericDrugs = await fetchDrugs(genericName);
     if (!genericDrugs?.length) return;
 
-    // Prefer a match with the same dosage form, otherwise use first result
-    const match = genericDrugs.find(d => d.DosageForm === selectedDrug.DosageForm) || genericDrugs[0];
+    // Match on same strength AND form first, then fall back progressively
+    const match =
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength && d.DosageForm === selectedDrug.DosageForm) ||
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength) ||
+        genericDrugs.find(d => d.DosageForm  === selectedDrug.DosageForm)  ||
+        genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Fetch pharmacy prices for the generic using the same search parameters
-    const quantity = parseInt(document.getElementById('quantity').value) || 30;
+    // Always use quantity 30 for the comparison so prices are a fair per-month figure
     const genericPharmacies = await fetchPharmacies({
         memberNumber: '01',
         ndc:          match.Ndc,
-        quantity,
+        quantity:     30,
         daysSupply:   3,
         groupNum:     'TPD001',
         zip:          userZip,
@@ -826,10 +830,13 @@ async function showGenericAlternativesBanner(selectedDrug) {
 
     // Build savings display strings
     const fmt = n => '$' + n.toFixed(2);
-    const brandStr   = currentLowestBrandPrice != null ? fmt(currentLowestBrandPrice) : null;
-    const genericStr = lowestGenericPrice      != null ? fmt(lowestGenericPrice)      : null;
-    const saving     = (currentLowestBrandPrice != null && lowestGenericPrice != null)
-        ? currentLowestBrandPrice - lowestGenericPrice : null;
+    // Normalise brand price to 30-day supply so comparison is apples-to-apples
+    const brandPrice30 = (currentLowestBrandPrice != null && currentBrandSearchQuantity > 0)
+        ? currentLowestBrandPrice * 30 / currentBrandSearchQuantity : null;
+    const brandStr   = brandPrice30      != null ? fmt(brandPrice30)      : null;
+    const genericStr = lowestGenericPrice != null ? fmt(lowestGenericPrice) : null;
+    const saving     = (brandPrice30 != null && lowestGenericPrice != null)
+        ? brandPrice30 - lowestGenericPrice : null;
     const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
 
     // Inject keyframe animation once
@@ -864,11 +871,11 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
-              <span style="font-weight:600;">${brandStr}</span>
+              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
-              <span style="font-weight:600;">${genericStr}</span>
+              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
             </div>
             ${savingStr ? `
             <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
@@ -999,6 +1006,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     const filteredPharmacies = removeOutliersUsingSD(validPharmacies, 1.5);
     filteredPharmacies.sort((a, b) => a.PatientPay - b.PatientPay);
     currentLowestBrandPrice = filteredPharmacies[0]?.PatientPay || null;
+    currentBrandSearchQuantity = quantity;
 
     if (filteredPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found after filtering outliers.';
