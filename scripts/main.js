@@ -490,8 +490,8 @@ function displayRecentSearches(removeAllOptions = true) {
             const drugDetails = JSON.parse(event.target.dataset.details);
             inputField.value  = drugName;
             if (removeAllOptions) {
-                dosageDropdown.innerHTML = '<option value="">Select dosage</option>';
-                formDropdown.innerHTML   = '<option value="">Select form</option>';
+                dosageDropdown.innerHTML = '<option value=""></option>';
+                formDropdown.innerHTML   = '<option value=""></option>';
             }
             const stored      = JSON.parse(localStorage.getItem('recentSearches')) || [];
             const match       = stored.find(s => s.name === drugName);
@@ -583,8 +583,8 @@ inputField.addEventListener('input', (e) => {
     if (!inputField.value.trim()) {
         drugData = [];
         currentNDC = '';
-        dosageDropdown.innerHTML = '<option value="">Select dosage</option>';
-        formDropdown.innerHTML   = '<option value="">Select form</option>';
+        dosageDropdown.innerHTML = '<option value=""></option>';
+        formDropdown.innerHTML   = '<option value=""></option>';
         quantityField.value = '';
         suggestionsDiv.innerHTML = '';
         pharmacyListDiv.innerHTML = '';
