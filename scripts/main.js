@@ -37,6 +37,7 @@ let currentSelectedNpi = null;
 let currentSelectedPosition = null;
 let currentSelectedIsFeatured = false;
 let isRecentSearch = false;
+let currentLowestBrandPrice = null;
 const SESSION_START = new Date();
 
 const DEVICE_TYPE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
@@ -744,9 +745,48 @@ async function getGenericForBrand(drugName) {
 // Show a dismissible banner above the pharmacy list when a cheaper generic
 // alternative appears to be available for the selected brand-name drug.
 // Runs async in the background so it never delays the pharmacy list render.
+function injectGenericPricesOnCards(genericPharmacies, brandDrugName, genericDrugName) {
+    // Clear any previous injections
+    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
+
+    // Build NPI → cheapest generic price map
+    const priceByNpi = new Map();
+    for (const p of genericPharmacies) {
+        const npi = String(p.Pharmacy?.Npi || '');
+        const price = parseFloat(p.Pricing?.PatientPay);
+        if (npi && !isNaN(price) && price > 0) {
+            if (!priceByNpi.has(npi) || price < priceByNpi.get(npi)) {
+                priceByNpi.set(npi, price);
+            }
+        }
+    }
+
+    document.querySelectorAll('.pharmacy-card').forEach(card => {
+        const npi = String(card.dataset.npi || '');
+        const brandPrice = parseFloat((card.dataset.price || '').replace(/,/g, ''));
+        const genericPrice = priceByNpi.get(npi);
+        if (!genericPrice || isNaN(brandPrice)) return;
+
+        const saving = brandPrice - genericPrice;
+        const badge = document.createElement('div');
+        badge.className = 'generic-price-badge';
+        badge.style.cssText = [
+            'position:absolute', 'top:10px', 'right:12px',
+            'text-align:right', 'line-height:1.3'
+        ].join(';');
+        badge.innerHTML = `
+            <div style="font-size:11px;color:#9a9a92;">Generic: $${genericPrice.toFixed(2)}</div>
+            ${saving > 0.01 ? `<div style="font-size:10px;font-weight:600;color:#2a7a4f;">save $${saving.toFixed(2)}</div>` : ''}
+        `;
+        card.style.position = 'relative';
+        card.appendChild(badge);
+    });
+}
+
 async function showGenericAlternativesBanner(selectedDrug) {
     const existing = document.getElementById('generic-alt-banner');
     if (existing) existing.remove();
+    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
 
     // RxNorm confirms brand status and returns the generic name — returns null
     // for generics, salts, ingredients, etc. so the banner never fires falsely.
@@ -759,6 +799,38 @@ async function showGenericAlternativesBanner(selectedDrug) {
     // Prefer a match with the same dosage form, otherwise use first result
     const match = genericDrugs.find(d => d.DosageForm === selectedDrug.DosageForm) || genericDrugs[0];
     const altName = match.MedDrugName;
+
+    // Fetch pharmacy prices for the generic using the same search parameters
+    const quantity = parseInt(document.getElementById('quantity').value) || 30;
+    const genericPharmacies = await fetchPharmacies({
+        memberNumber: '01',
+        ndc:          match.Ndc,
+        quantity,
+        daysSupply:   3,
+        groupNum:     'TPD001',
+        zip:          userZip,
+        radius:       userRadius,
+        maxRecords:   3000,
+    });
+
+    // Find the cheapest generic price
+    const genericPrices = (genericPharmacies || [])
+        .map(p => parseFloat(p.Pricing?.PatientPay))
+        .filter(p => !isNaN(p) && p > 0);
+    const lowestGenericPrice = genericPrices.length ? Math.min(...genericPrices) : null;
+
+    // Inject per-pharmacy generic prices onto each visible card
+    if (genericPharmacies?.length) {
+        injectGenericPricesOnCards(genericPharmacies, selectedDrug.MedDrugName, altName);
+    }
+
+    // Build savings display strings
+    const fmt = n => '$' + n.toFixed(2);
+    const brandStr   = currentLowestBrandPrice != null ? fmt(currentLowestBrandPrice) : null;
+    const genericStr = lowestGenericPrice      != null ? fmt(lowestGenericPrice)      : null;
+    const saving     = (currentLowestBrandPrice != null && lowestGenericPrice != null)
+        ? currentLowestBrandPrice - lowestGenericPrice : null;
+    const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
 
     // Inject keyframe animation once
     if (!document.getElementById('generic-alt-style')) {
@@ -785,13 +857,29 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <circle cx="12" cy="16" r="0.5" fill="#2a7a4f"/>
         </svg>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:4px;">
+          <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:6px;">
             Generic alternative available
           </div>
-          <div style="font-size:13px;color:#2c5e45;line-height:1.45;">
+          ${brandStr && genericStr ? `
+          <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
+              <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
+              <span style="font-weight:600;">${brandStr}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
+              <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
+              <span style="font-weight:600;">${genericStr}</span>
+            </div>
+            ${savingStr ? `
+            <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:13px;font-weight:600;color:#1a5c39;">You could save</span>
+              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/mo</span>
+            </div>` : ''}
+          </div>` : `
+          <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
             <strong>${altName}</strong> is a generic version of
             <strong>${selectedDrug.MedDrugName}</strong> and may cost significantly less.
-          </div>
+          </div>`}
           <button id="generic-alt-btn" style="
             margin-top:10px;background:#2a7a4f;color:#fff;border:none;
             border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;
@@ -910,6 +998,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     const filteredPharmacies = removeOutliersUsingSD(validPharmacies, 1.5);
     filteredPharmacies.sort((a, b) => a.PatientPay - b.PatientPay);
+    currentLowestBrandPrice = filteredPharmacies[0]?.PatientPay || null;
 
     if (filteredPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found after filtering outliers.';
