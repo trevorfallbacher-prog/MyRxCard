@@ -569,12 +569,27 @@ document.addEventListener('click', (e) => {
     }
 });
 
-function floatSelectLabel(select) {
-    const label = select.parentElement?.querySelector('label');
+// ── Floating labels (works regardless of label/input order in HTML) ──
+function updateFloatLabel(field) {
+    const label = field.parentElement?.querySelector('label');
     if (!label) return;
-    if (select.value) label.classList.add('label-float');
+    const hasValue = field.value && field.value.trim() !== '';
+    const hasFocus = document.activeElement === field;
+    if (hasValue || hasFocus) label.classList.add('label-float');
     else label.classList.remove('label-float');
 }
+
+// Wire up all form fields
+[inputField, dosageDropdown, formDropdown, document.getElementById('quantity')].forEach(field => {
+    if (!field) return;
+    field.addEventListener('focus', () => updateFloatLabel(field));
+    field.addEventListener('blur',  () => updateFloatLabel(field));
+    field.addEventListener('input', () => updateFloatLabel(field));
+    field.addEventListener('change',() => updateFloatLabel(field));
+    // Remove placeholder text so it doesn't show through
+    if (field.tagName === 'INPUT') field.setAttribute('placeholder', ' ');
+    updateFloatLabel(field);
+});
 
 function renderDropdown(dropdown, items, selectedValue = null) {
     dropdown.innerHTML = '';
@@ -585,14 +600,8 @@ function renderDropdown(dropdown, items, selectedValue = null) {
     });
     if (selectedValue && items.includes(selectedValue)) dropdown.value = selectedValue;
     else if (items.length > 0) dropdown.value = items[0];
-    floatSelectLabel(dropdown);
+    updateFloatLabel(dropdown);
 }
-
-// Float labels on selects
-[dosageDropdown, formDropdown].forEach(sel => {
-    sel.addEventListener('change', () => floatSelectLabel(sel));
-    floatSelectLabel(sel);
-});
 
 function initializeDropdowns() {
     const allForms = new Set(), allDosages = new Set();

@@ -23,11 +23,7 @@
       z-index: 1;
     }
 
-    /* Float label up when focused or has value */
-    .form-group input:focus ~ label,
-    .form-group input:not(:placeholder-shown) ~ label,
-    .form-group select:focus ~ label,
-    .form-group select:not([value=""]) ~ label,
+    /* Float label up when focused or has value — JS adds .label-float */
     .form-group .label-float {
       top: 0;
       transform: translateY(-50%);
@@ -55,8 +51,11 @@
       appearance: none;
     }
 
-    .form-group input::placeholder {
-      color: transparent;
+    .form-group input::placeholder,
+    .form-group input::-webkit-input-placeholder,
+    .form-group input::-moz-placeholder {
+      color: transparent !important;
+      opacity: 0 !important;
     }
 
     .form-group input:focus,
