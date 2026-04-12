@@ -708,6 +708,109 @@ function animateStar(canvas) {
     return () => cancelAnimationFrame(rafId);
 }
 
+// ── GENERIC ALTERNATIVES ────────────────────────────────────────────────────
+
+// Brand names typically start with an uppercase letter and have mostly
+// lowercase characters (e.g. "Lipitor"), unlike generics (e.g. "atorvastatin")
+// or abbreviations (e.g. "NSAID").
+function looksLikeBrandName(name) {
+    if (!name) return false;
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const first = trimmed[0];
+    if (first.toUpperCase() !== first || first.toLowerCase() === first) return false;
+    const rest = trimmed.slice(1).replace(/[^a-zA-Z]/g, '');
+    if (!rest.length) return true;
+    const lower = (rest.match(/[a-z]/g) || []).length;
+    return lower / rest.length > 0.5;
+}
+
+// Search drugData for drugs that share the same GPI prefix (same drug class /
+// active ingredient) but have a different, generic-looking name.
+function findGenericAlternatives(selectedDrug) {
+    if (!selectedDrug?.Gpi || !drugData.length) return [];
+    const gpiPrefix = selectedDrug.Gpi.substring(0, 10);
+    if (!gpiPrefix || gpiPrefix === '0000000000') return [];
+    const seen = new Set();
+    return drugData.filter(drug => {
+        if (drug.Ndc === selectedDrug.Ndc) return false;
+        if (!drug.Gpi?.startsWith(gpiPrefix)) return false;
+        if (drug.MedDrugName?.toLowerCase() === selectedDrug.MedDrugName?.toLowerCase()) return false;
+        if (looksLikeBrandName(drug.MedDrugName)) return false;
+        const key = drug.MedDrugName?.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+// Show a dismissible banner above the pharmacy list when a cheaper generic
+// alternative appears to be available for the selected brand-name drug.
+function showGenericAlternativesBanner(selectedDrug) {
+    const existing = document.getElementById('generic-alt-banner');
+    if (existing) existing.remove();
+    if (!looksLikeBrandName(selectedDrug?.MedDrugName)) return;
+    const alternatives = findGenericAlternatives(selectedDrug);
+    if (!alternatives.length) return;
+
+    // Inject keyframe animation once
+    if (!document.getElementById('generic-alt-style')) {
+        const style = document.createElement('style');
+        style.id = 'generic-alt-style';
+        style.textContent = '@keyframes genericBannerFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}';
+        document.head.appendChild(style);
+    }
+
+    const altName = alternatives[0].MedDrugName;
+    const banner = document.createElement('div');
+    banner.id = 'generic-alt-banner';
+    banner.style.cssText = [
+        'display:flex', 'align-items:flex-start', 'gap:12px',
+        'background:#eaf6f0', 'border:1.5px solid #2a7a4f', 'border-radius:12px',
+        'padding:14px 18px', 'margin-bottom:16px', 'font-family:inherit',
+        'animation:genericBannerFadeIn 0.35s ease'
+    ].join(';');
+    banner.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2a7a4f"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             style="flex-shrink:0;margin-top:2px">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <circle cx="12" cy="16" r="0.5" fill="#2a7a4f"/>
+        </svg>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:4px;">
+            Generic alternative available
+          </div>
+          <div style="font-size:13px;color:#2c5e45;line-height:1.45;">
+            <strong>${altName}</strong> is a generic version of
+            <strong>${selectedDrug.MedDrugName}</strong> and may cost significantly less.
+          </div>
+          <button id="generic-alt-btn" style="
+            margin-top:10px;background:#2a7a4f;color:#fff;border:none;
+            border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;
+            cursor:pointer;font-family:inherit;transition:background 0.15s ease;
+          " onmouseover="this.style.background='#225f3d'"
+            onmouseout="this.style.background='#2a7a4f'">
+            Search for ${altName}
+          </button>
+        </div>
+        <button aria-label="Dismiss" style="
+          background:none;border:none;cursor:pointer;padding:0 0 0 4px;
+          color:#2a7a4f;font-size:16px;line-height:1;flex-shrink:0;opacity:0.55;
+        " onclick="document.getElementById('generic-alt-banner').remove()">&#x2715;</button>
+    `;
+
+    pharmacyListDiv.insertAdjacentElement('beforebegin', banner);
+
+    document.getElementById('generic-alt-btn').addEventListener('click', () => {
+        inputField.value = altName;
+        banner.remove();
+        inputField.dispatchEvent(new Event('input'));
+        inputField.focus();
+    });
+}
+
 async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     quantity = parseInt(document.getElementById('quantity').value) || 30;
 
@@ -910,6 +1013,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         }).join('');
 
     initializePharmacyCardListeners();
+    showGenericAlternativesBanner(selectedDrug);
 }
 
 function initializePharmacyCardListeners() {
