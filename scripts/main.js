@@ -708,40 +708,33 @@ function animateStar(canvas) {
 
 // ── GENERIC ALTERNATIVES ────────────────────────────────────────────────────
 
-// Brand names typically start with an uppercase letter and have mostly
-// lowercase characters (e.g. "Lipitor"), unlike generics (e.g. "atorvastatin")
-// or abbreviations (e.g. "NSAID").
-function looksLikeBrandName(name) {
-    if (!name) return false;
-    const trimmed = name.trim();
-    if (!trimmed) return false;
-    const first = trimmed[0];
-    if (first.toUpperCase() !== first || first.toLowerCase() === first) return false;
-    const rest = trimmed.slice(1).replace(/[^a-zA-Z]/g, '');
-    if (!rest.length) return true;
-    const lower = (rest.match(/[a-z]/g) || []).length;
-    return lower / rest.length > 0.5;
-}
-
-// Use the free NIH RxNorm API to resolve a brand name to its generic (INN) name.
-// e.g. "Lipitor" → "atorvastatin"
-async function fetchGenericNameFromRxNorm(brandName) {
+// Use RxNorm (NIH) to check if a drug name is a brand name and return its
+// generic (INN) name. Returns null if the drug is already generic or unknown.
+// Only proceeds if RxNorm confirms the term type is BN (Brand Name).
+async function getGenericForBrand(drugName) {
     try {
         const r1 = await fetch(
-            `https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(brandName)}&search=1`
+            `https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(drugName)}&search=1`
         );
         if (!r1.ok) return null;
         const d1 = await r1.json();
         const rxcui = d1?.idGroup?.rxnormId?.[0];
         if (!rxcui) return null;
 
+        // Only continue if RxNorm says this is a Brand Name (BN)
         const r2 = await fetch(
-            `https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/related.json?tty=IN`
+            `https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/properties.json`
         );
         if (!r2.ok) return null;
         const d2 = await r2.json();
-        const groups = d2?.relatedGroup?.conceptGroup || [];
-        const inGroup = groups.find(g => g.tty === 'IN');
+        if (d2?.properties?.tty !== 'BN') return null;
+
+        const r3 = await fetch(
+            `https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/related.json?tty=IN`
+        );
+        if (!r3.ok) return null;
+        const d3 = await r3.json();
+        const inGroup = (d3?.relatedGroup?.conceptGroup || []).find(g => g.tty === 'IN');
         return inGroup?.conceptProperties?.[0]?.name?.toLowerCase() || null;
     } catch (e) {
         return null;
@@ -754,10 +747,10 @@ async function fetchGenericNameFromRxNorm(brandName) {
 async function showGenericAlternativesBanner(selectedDrug) {
     const existing = document.getElementById('generic-alt-banner');
     if (existing) existing.remove();
-    if (!looksLikeBrandName(selectedDrug?.MedDrugName)) return;
 
-    // Resolve generic name via RxNorm, then verify it exists in RxLogic
-    const genericName = await fetchGenericNameFromRxNorm(selectedDrug.MedDrugName);
+    // RxNorm confirms brand status and returns the generic name — returns null
+    // for generics, salts, ingredients, etc. so the banner never fires falsely.
+    const genericName = await getGenericForBrand(selectedDrug?.MedDrugName);
     if (!genericName) return;
 
     const genericDrugs = await fetchDrugs(genericName);
