@@ -710,30 +710,36 @@ function animateStar(canvas) {
 
 // ── DRUG IMAGE ───────────────────────────────────────────────────────────────
 
-async function fetchDrugImage(drugName) {
-    try {
-        const r = await fetch(
-            `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?name=${encodeURIComponent(drugName)}&resolution=600`
-        );
-        if (!r.ok) return null;
-        const d = await r.json();
-        return d?.nlmRxImages?.[0]?.imageUrl || null;
-    } catch (e) {
-        return null;
-    }
+// Strip salt forms and conjunctions so RxImage can match the active ingredient.
+// "Omeprazole-Sodium Bicarbonate" → "omeprazole"
+// "Atorvastatin Calcium" → "atorvastatin"
+function simplifyDrugName(fullName) {
+    return fullName.split(/[-\/]/)[0].trim().split(' ')[0].toLowerCase();
 }
 
-// Pill icon shown when no image is available — neutral grey, never looks broken
-const PILL_FALLBACK_SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"
-     style="width:100%;height:100%;display:block;">
-  <rect x="8" y="24" width="48" height="16" rx="8" fill="#e0ddd6"/>
-  <rect x="8" y="24" width="24" height="16" rx="8" fill="#c8c4bc"/>
-  <line x1="32" y1="24" x2="32" y2="40" stroke="#b4b0a8" stroke-width="1.5"/>
-</svg>`;
+async function fetchDrugImage(ndc, drugName) {
+    const urls = [
+        // Try NDC first — most precise
+        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?ndc=${encodeURIComponent(ndc)}&resolution=600`,
+        // Fall back to simplified active ingredient name
+        `https://rximage.nlm.nih.gov/api/rximage/1/rxnav?name=${encodeURIComponent(simplifyDrugName(drugName))}&resolution=600`,
+    ];
+    for (const url of urls) {
+        try {
+            const r = await fetch(url);
+            if (!r.ok) continue;
+            const d = await r.json();
+            const imageUrl = d?.nlmRxImages?.[0]?.imageUrl;
+            if (imageUrl) return imageUrl;
+        } catch (e) { continue; }
+    }
+    return null;
+}
 
-async function loadDrugImage(drugName) {
-    // Re-use or create the image container anchored to selected-drug-name
+// Neutral grey pill icon — shown immediately and kept if no real image loads
+const PILL_FALLBACK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect x="8" y="24" width="48" height="16" rx="8" fill="#e0ddd6"/><rect x="8" y="24" width="24" height="16" rx="8" fill="#c8c4bc"/><line x1="32" y1="24" x2="32" y2="40" stroke="#b4b0a8" stroke-width="1.5"/></svg>`;
+
+async function loadDrugImage(ndc, drugName) {
     let container = document.getElementById('drug-img-container');
     if (!container) {
         container = document.createElement('div');
@@ -742,31 +748,29 @@ async function loadDrugImage(drugName) {
             'width:64px', 'height:64px', 'border-radius:10px',
             'overflow:hidden', 'background:#f4f3f0',
             'border:1px solid #e0ddd6', 'flex-shrink:0',
-            'display:flex', 'align-items:center', 'justify-content:center'
+            'display:flex', 'align-items:center', 'justify-content:center',
+            'padding:6px', 'box-sizing:border-box'
         ].join(';');
         const nameEl = document.getElementById('selected-drug-name');
         if (nameEl?.parentElement) {
-            nameEl.parentElement.style.display = 'flex';
-            nameEl.parentElement.style.alignItems = 'center';
-            nameEl.parentElement.style.gap = '12px';
+            nameEl.parentElement.style.cssText += ';display:flex;align-items:center;gap:12px;';
             nameEl.parentElement.insertBefore(container, nameEl);
         }
     }
 
-    // Show pill icon immediately while fetching
+    // Show pill icon immediately while the real image loads
     container.innerHTML = PILL_FALLBACK_SVG;
 
-    const imageUrl = await fetchDrugImage(drugName);
+    const imageUrl = await fetchDrugImage(ndc, drugName);
     if (imageUrl) {
         const img = document.createElement('img');
-        img.src = imageUrl;
-        img.alt = drugName;
-        img.style.cssText = 'width:100%;height:100%;object-fit:contain;';
+        img.src   = imageUrl;
+        img.alt   = drugName;
+        img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
         img.onerror = () => { container.innerHTML = PILL_FALLBACK_SVG; };
         container.innerHTML = '';
         container.appendChild(img);
     }
-    // If no image, pill icon already showing — nothing more to do
 }
 
 // ── GENERIC ALTERNATIVES ────────────────────────────────────────────────────
@@ -1105,7 +1109,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     document.getElementById('selected-quantity').textContent  = quantity;
     document.getElementById('selected-form').textContent      = resolvedForm;
 
-    loadDrugImage(resolvedDrugName);
+    loadDrugImage(selectedDrug?.Ndc || '', resolvedDrugName);
 
     const firstPharmacy           = displayPharmacies[0];
     const firstPharmacyName       = firstPharmacy ? toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(firstPharmacy.Pharmacy?.Name || '')) : null;
