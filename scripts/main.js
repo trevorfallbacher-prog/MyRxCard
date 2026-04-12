@@ -579,6 +579,12 @@ function updateFloatLabel(field) {
     else label.classList.remove('label-float');
 }
 
+function updateAllFloatLabels() {
+    [inputField, dosageDropdown, formDropdown, document.getElementById('quantity')].forEach(f => {
+        if (f) updateFloatLabel(f);
+    });
+}
+
 // Wire up all form fields
 [inputField, dosageDropdown, formDropdown, document.getElementById('quantity')].forEach(field => {
     if (!field) return;
@@ -588,6 +594,18 @@ function updateFloatLabel(field) {
     field.addEventListener('change',() => updateFloatLabel(field));
     // Remove placeholder text so it doesn't show through
     if (field.tagName === 'INPUT') field.setAttribute('placeholder', ' ');
+
+    // Intercept programmatic .value = ... so labels always stay in sync
+    const proto = Object.getPrototypeOf(field);
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) {
+        Object.defineProperty(field, 'value', {
+            get() { return descriptor.get.call(this); },
+            set(v) { descriptor.set.call(this, v); updateFloatLabel(this); },
+            configurable: true,
+        });
+    }
+
     updateFloatLabel(field);
 });
 
