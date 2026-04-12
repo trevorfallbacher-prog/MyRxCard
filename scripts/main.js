@@ -586,10 +586,21 @@ const triggerInputFieldChange = async (event) => {
 const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 500);
 inputField.addEventListener('input', (e) => {
     debouncedTriggerInputFieldChange(e);
-    // Re-lock fields if the user clears the prescription
+    // Reset everything if the user clears the prescription
     if (!inputField.value.trim()) {
         drugData = [];
+        currentNDC = '';
+        dosageDropdown.innerHTML = '<option value="">Select dosage</option>';
+        formDropdown.innerHTML   = '<option value="">Select form</option>';
+        quantityField.value = '';
+        suggestionsDiv.innerHTML = '';
+        pharmacyListDiv.innerHTML = '';
+        resultsDiv.style.display = 'none';
+        document.getElementById('generic-alt-banner')?.remove();
+        const errorMessageElement = document.getElementById('errorMessage');
+        if (errorMessageElement) errorMessageElement.textContent = '';
         updateFieldLock();
+        updateAllFloatLabels();
     }
 });
 
