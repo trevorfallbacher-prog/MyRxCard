@@ -870,11 +870,12 @@ async function showGenericAlternativesBanner(selectedDrug) {
         genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Always use quantity 30 for the comparison so prices are a fair per-month figure
+    // Use the same quantity as the brand search so prices are directly comparable
+    const searchQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
     const genericPharmacies = await fetchPharmacies({
         memberNumber: '01',
         ndc:          match.Ndc,
-        quantity:     30,
+        quantity:     searchQuantity,
         daysSupply:   3,
         groupNum:     'TPD001',
         zip:          userZip,
@@ -893,16 +894,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
         injectGenericPricesOnCards(genericPharmacies, selectedDrug.MedDrugName, altName);
     }
 
-    // Build savings display strings
+    // Build savings display strings — both brand and generic use the same quantity
+    // so no normalisation is needed; prices are directly comparable.
     const fmt = n => '$' + n.toFixed(2);
-    // Normalise brand price to 30-day supply so comparison is apples-to-apples
-    const brandPrice30 = (currentLowestBrandPrice != null && currentBrandSearchQuantity > 0)
-        ? currentLowestBrandPrice * 30 / currentBrandSearchQuantity : null;
-    const brandStr   = brandPrice30      != null ? fmt(brandPrice30)      : null;
-    const genericStr = lowestGenericPrice != null ? fmt(lowestGenericPrice) : null;
-    const saving     = (brandPrice30 != null && lowestGenericPrice != null)
-        ? brandPrice30 - lowestGenericPrice : null;
-    const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
+    const brandPrice  = currentLowestBrandPrice != null ? currentLowestBrandPrice : null;
+    const brandStr    = brandPrice         != null ? fmt(brandPrice)         : null;
+    const genericStr  = lowestGenericPrice  != null ? fmt(lowestGenericPrice)  : null;
+    const saving      = (brandPrice != null && lowestGenericPrice != null)
+        ? brandPrice - lowestGenericPrice : null;
+    const savingStr   = saving != null && saving > 0 ? fmt(saving) : null;
+    const qtyLabel    = searchQuantity === 30 ? '/mo' : ` for ${searchQuantity}`;
 
     // Inject keyframe animation once
     if (!document.getElementById('generic-alt-style')) {
@@ -936,16 +937,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
-              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
+              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">${qtyLabel}</span></span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
-              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
+              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">${qtyLabel}</span></span>
             </div>
             ${savingStr ? `
             <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
               <span style="font-size:13px;font-weight:600;color:#1a5c39;">You could save</span>
-              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/mo</span>
+              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}${qtyLabel}</span>
             </div>` : ''}
           </div>` : `
           <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
