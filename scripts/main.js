@@ -569,6 +569,13 @@ document.addEventListener('click', (e) => {
     }
 });
 
+function floatSelectLabel(select) {
+    const label = select.parentElement?.querySelector('label');
+    if (!label) return;
+    if (select.value) label.classList.add('label-float');
+    else label.classList.remove('label-float');
+}
+
 function renderDropdown(dropdown, items, selectedValue = null) {
     dropdown.innerHTML = '';
     items.forEach(item => {
@@ -578,7 +585,14 @@ function renderDropdown(dropdown, items, selectedValue = null) {
     });
     if (selectedValue && items.includes(selectedValue)) dropdown.value = selectedValue;
     else if (items.length > 0) dropdown.value = items[0];
+    floatSelectLabel(dropdown);
 }
+
+// Float labels on selects
+[dosageDropdown, formDropdown].forEach(sel => {
+    sel.addEventListener('change', () => floatSelectLabel(sel));
+    floatSelectLabel(sel);
+});
 
 function initializeDropdowns() {
     const allForms = new Set(), allDosages = new Set();
