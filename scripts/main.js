@@ -510,6 +510,19 @@ function debounce(func, delay) {
     return function (...args) { clearTimeout(timeoutId); timeoutId = setTimeout(() => func.apply(this, args), delay); };
 }
 
+// Pick the best default quantity from a drug's variants.
+// Uses the most common MedPackSize across all variants of the same drug,
+// so a drug with entries for pack sizes [1, 30, 30, 100] defaults to 30.
+function pickBestPackSize(variants) {
+    const sizes = variants.map(d => parseInt(d.MedPackSize)).filter(s => s > 0);
+    if (!sizes.length) return 30;
+    // Count frequency of each size
+    const freq = new Map();
+    for (const s of sizes) freq.set(s, (freq.get(s) || 0) + 1);
+    // Return the most common; ties broken by largest size
+    return [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+}
+
 const triggerInputFieldChange = async (event) => {
     const query = event.target.value.trim();
     if (query.length >= 3) {
@@ -535,7 +548,8 @@ const triggerInputFieldChange = async (event) => {
                     });
                     renderDropdown(dosageDropdown, [...dSet]);
                     renderDropdown(formDropdown,   [...fSet]);
-                    const packSize = parseInt(drugs.find(d => d.MedDrugName === drug.MedDrugName)?.MedPackSize) || 30;
+                    const variants = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
+                    const packSize = pickBestPackSize(variants);
                     document.getElementById('quantity').value = packSize;
                     suggestionsDiv.innerHTML = '';
                 });
@@ -971,7 +985,8 @@ async function showGenericAlternativesBanner(selectedDrug) {
         renderDropdown(dosageDropdown, [...dSet]);
         renderDropdown(formDropdown,   [...fSet]);
 
-        const packSize = parseInt(match.MedPackSize) || 30;
+        const genVariants = genericDrugs.filter(d => d.MedDrugName === match.MedDrugName);
+        const packSize = pickBestPackSize(genVariants);
         document.getElementById('quantity').value = packSize;
 
         // Run the search immediately — no need to go through the suggestion step
