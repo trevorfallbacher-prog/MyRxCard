@@ -723,33 +723,49 @@ function looksLikeBrandName(name) {
     return lower / rest.length > 0.5;
 }
 
-// Search drugData for drugs that share the same GPI prefix (same drug class /
-// active ingredient) but have a different, generic-looking name.
-function findGenericAlternatives(selectedDrug) {
-    if (!selectedDrug?.Gpi || !drugData.length) return [];
-    const gpiPrefix = selectedDrug.Gpi.substring(0, 10);
-    if (!gpiPrefix || gpiPrefix === '0000000000') return [];
-    const seen = new Set();
-    return drugData.filter(drug => {
-        if (drug.Ndc === selectedDrug.Ndc) return false;
-        if (!drug.Gpi?.startsWith(gpiPrefix)) return false;
-        if (drug.MedDrugName?.toLowerCase() === selectedDrug.MedDrugName?.toLowerCase()) return false;
-        if (looksLikeBrandName(drug.MedDrugName)) return false;
-        const key = drug.MedDrugName?.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+// Use the free NIH RxNorm API to resolve a brand name to its generic (INN) name.
+// e.g. "Lipitor" → "atorvastatin"
+async function fetchGenericNameFromRxNorm(brandName) {
+    try {
+        const r1 = await fetch(
+            `https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(brandName)}&search=1`
+        );
+        if (!r1.ok) return null;
+        const d1 = await r1.json();
+        const rxcui = d1?.idGroup?.rxnormId?.[0];
+        if (!rxcui) return null;
+
+        const r2 = await fetch(
+            `https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/related.json?tty=IN`
+        );
+        if (!r2.ok) return null;
+        const d2 = await r2.json();
+        const groups = d2?.relatedGroup?.conceptGroup || [];
+        const inGroup = groups.find(g => g.tty === 'IN');
+        return inGroup?.conceptProperties?.[0]?.name?.toLowerCase() || null;
+    } catch (e) {
+        return null;
+    }
 }
 
 // Show a dismissible banner above the pharmacy list when a cheaper generic
 // alternative appears to be available for the selected brand-name drug.
-function showGenericAlternativesBanner(selectedDrug) {
+// Runs async in the background so it never delays the pharmacy list render.
+async function showGenericAlternativesBanner(selectedDrug) {
     const existing = document.getElementById('generic-alt-banner');
     if (existing) existing.remove();
     if (!looksLikeBrandName(selectedDrug?.MedDrugName)) return;
-    const alternatives = findGenericAlternatives(selectedDrug);
-    if (!alternatives.length) return;
+
+    // Resolve generic name via RxNorm, then verify it exists in RxLogic
+    const genericName = await fetchGenericNameFromRxNorm(selectedDrug.MedDrugName);
+    if (!genericName) return;
+
+    const genericDrugs = await fetchDrugs(genericName);
+    if (!genericDrugs?.length) return;
+
+    // Prefer a match with the same dosage form, otherwise use first result
+    const match = genericDrugs.find(d => d.DosageForm === selectedDrug.DosageForm) || genericDrugs[0];
+    const altName = match.MedDrugName;
 
     // Inject keyframe animation once
     if (!document.getElementById('generic-alt-style')) {
@@ -759,7 +775,6 @@ function showGenericAlternativesBanner(selectedDrug) {
         document.head.appendChild(style);
     }
 
-    const altName = alternatives[0].MedDrugName;
     const banner = document.createElement('div');
     banner.id = 'generic-alt-banner';
     banner.style.cssText = [
