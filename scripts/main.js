@@ -839,51 +839,9 @@ async function getGenericForBrand(drugName) {
     }
 }
 
-// Show a dismissible banner above the pharmacy list when a cheaper generic
-// alternative appears to be available for the selected brand-name drug.
-// Runs async in the background so it never delays the pharmacy list render.
-function injectGenericPricesOnCards(genericPharmacies, brandDrugName, genericDrugName) {
-    // Clear any previous injections
-    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
-
-    // Build NPI → cheapest generic price map
-    const priceByNpi = new Map();
-    for (const p of genericPharmacies) {
-        const npi = String(p.Pharmacy?.Npi || '');
-        const price = parseFloat(p.Pricing?.PatientPay);
-        if (npi && !isNaN(price) && price > 0) {
-            if (!priceByNpi.has(npi) || price < priceByNpi.get(npi)) {
-                priceByNpi.set(npi, price);
-            }
-        }
-    }
-
-    document.querySelectorAll('.pharmacy-card').forEach(card => {
-        const npi = String(card.dataset.npi || '');
-        const brandPrice = parseFloat((card.dataset.price || '').replace(/,/g, ''));
-        const genericPrice = priceByNpi.get(npi);
-        if (!genericPrice || isNaN(brandPrice)) return;
-
-        const saving = brandPrice - genericPrice;
-        const badge = document.createElement('div');
-        badge.className = 'generic-price-badge';
-        badge.style.cssText = [
-            'position:absolute', 'top:10px', 'right:12px',
-            'text-align:right', 'line-height:1.3'
-        ].join(';');
-        badge.innerHTML = `
-            <div style="font-size:11px;color:#9a9a92;">Generic: $${genericPrice.toFixed(2)}</div>
-            ${saving > 0.01 ? `<div style="font-size:10px;font-weight:600;color:#2a7a4f;">save $${saving.toFixed(2)}</div>` : ''}
-        `;
-        card.style.position = 'relative';
-        card.appendChild(badge);
-    });
-}
-
 async function showGenericAlternativesBanner(selectedDrug) {
     const existing = document.getElementById('generic-alt-banner');
     if (existing) existing.remove();
-    document.querySelectorAll('.generic-price-badge').forEach(el => el.remove());
 
     // RxNorm confirms brand status and returns the generic name — returns null
     // for generics, salts, ingredients, etc. so the banner never fires falsely.
@@ -901,40 +859,17 @@ async function showGenericAlternativesBanner(selectedDrug) {
         genericDrugs[0];
     const altName = match.MedDrugName;
 
-    // Use the user's search quantity for per-card generic badges (apples-to-apples
-    // with the card prices), but always use quantity 30 for the banner's monthly
-    // comparison so both brand and generic come from real API prices at qty 30.
+    // Fetch both brand and generic at qty 30 for an apples-to-apples comparison.
+    // We use real API prices — no linear scaling.
+    const compareQty = 30;
     const userQuantity = currentBrandSearchQuantity || parseInt(document.getElementById('quantity').value) || 30;
+    const needsBrandFetch = userQuantity !== compareQty;
 
-    // Fetch generic at the user's quantity for per-card badges
-    const genericPharmaciesForCards = await fetchPharmacies({
-        memberNumber: '01',
-        ndc:          match.Ndc,
-        quantity:     userQuantity,
-        daysSupply:   3,
-        groupNum:     'TPD001',
-        zip:          userZip,
-        radius:       userRadius,
-        maxRecords:   3000,
-    });
-
-    // Inject per-pharmacy generic prices onto each visible card (same qty basis)
-    if (genericPharmaciesForCards?.length) {
-        injectGenericPricesOnCards(genericPharmaciesForCards, selectedDrug.MedDrugName, altName);
-    }
-
-    // For the banner, fetch both brand and generic at qty 30 for a true monthly
-    // comparison — no linear scaling, real API prices for a 30-day supply.
-    const monthlyQty = 30;
-    const needsSeparateFetch = userQuantity !== monthlyQty;
-
-    const [brandMonthly, genericMonthly] = await Promise.all([
-        needsSeparateFetch
-            ? fetchPharmacies({ memberNumber: '01', ndc: selectedDrug.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
-            : Promise.resolve(null),   // reuse currentLowestBrandPrice from the main search
-        needsSeparateFetch
-            ? fetchPharmacies({ memberNumber: '01', ndc: match.Ndc, quantity: monthlyQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
-            : Promise.resolve(genericPharmaciesForCards),
+    const [brandResult, genericResult] = await Promise.all([
+        needsBrandFetch
+            ? fetchPharmacies({ memberNumber: '01', ndc: selectedDrug.Ndc, quantity: compareQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 })
+            : Promise.resolve(null),
+        fetchPharmacies({ memberNumber: '01', ndc: match.Ndc, quantity: compareQty, daysSupply: 3, groupNum: 'TPD001', zip: userZip, radius: userRadius, maxRecords: 3000 }),
     ]);
 
     const lowestPrice = (pharmacies) => {
@@ -944,14 +879,14 @@ async function showGenericAlternativesBanner(selectedDrug) {
         return prices.length ? Math.min(...prices) : null;
     };
 
-    const brandPrice30   = needsSeparateFetch ? lowestPrice(brandMonthly) : currentLowestBrandPrice;
-    const genericPrice30 = lowestPrice(genericMonthly);
+    const brandPrice   = needsBrandFetch ? lowestPrice(brandResult) : currentLowestBrandPrice;
+    const genericPrice = lowestPrice(genericResult);
 
     const fmt = n => '$' + n.toFixed(2);
-    const brandStr   = brandPrice30   != null ? fmt(brandPrice30)   : null;
-    const genericStr = genericPrice30 != null ? fmt(genericPrice30) : null;
-    const saving     = (brandPrice30 != null && genericPrice30 != null)
-        ? brandPrice30 - genericPrice30 : null;
+    const brandStr   = brandPrice   != null ? fmt(brandPrice)   : null;
+    const genericStr = genericPrice != null ? fmt(genericPrice) : null;
+    const saving     = (brandPrice != null && genericPrice != null)
+        ? brandPrice - genericPrice : null;
     const savingStr  = saving != null && saving > 0 ? fmt(saving) : null;
 
     // Inject keyframe animation once
@@ -986,16 +921,16 @@ async function showGenericAlternativesBanner(selectedDrug) {
           <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${selectedDrug.MedDrugName} <span style="opacity:0.6;font-size:11px;">(brand)</span></span>
-              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
+              <span style="font-weight:600;">${brandStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/30 tablets</span></span>
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#2c5e45;">
               <span>${altName} <span style="opacity:0.6;font-size:11px;">(generic)</span></span>
-              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/mo</span></span>
+              <span style="font-weight:600;">${genericStr}<span style="font-weight:400;font-size:11px;opacity:0.6;">/30 tablets</span></span>
             </div>
             ${savingStr ? `
             <div style="margin-top:4px;padding-top:6px;border-top:1px solid #b8e0cc;display:flex;justify-content:space-between;align-items:center;">
               <span style="font-size:13px;font-weight:600;color:#1a5c39;">You could save</span>
-              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/mo</span>
+              <span style="font-size:15px;font-weight:700;color:#1a5c39;">${savingStr}/30 tablets</span>
             </div>` : ''}
           </div>` : `
           <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
