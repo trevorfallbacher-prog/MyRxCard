@@ -1,0 +1,519 @@
+<style>
+@keyframes lspin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+@keyframes lpop{0%{transform:scale(0.8);opacity:0}60%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
+
+.header-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.rx-text-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.rx-intro-text {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.5;
+  color: #2c2c2a;
+}
+
+@media (max-width: 767px) {
+  .header-container {
+    flex-direction: column;
+  }
+
+  .lw-card {
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    order: 1;
+  }
+
+  .rx-text-block {
+    order: 2;
+    width: 100%;
+  }
+}
+
+.lw-card{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:16px;padding:14px 18px;
+  background:#f8f8f7;border:1px solid #e4e4e2;
+  border-radius:14px;min-height:64px;overflow:visible;
+  /* Updated from absolute to relative */
+  position:relative;
+  top:auto;
+  right:auto;
+  z-index:10;
+}
+.lw-left{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1;}
+.lw-display-row{display:flex;align-items:center;gap:6px;}
+
+.lw-zip-text{
+  font-size:14px;font-weight:500;color:#2c2c2a;white-space:nowrap;
+  border-bottom:1.5px dashed #c8c6c0;
+  cursor:pointer;
+  transition:border-color 0.15s ease, color 0.15s ease;
+}
+.lw-zip-text:hover{color:#3884a4;border-bottom-color:#3884a4;}
+
+.lw-pencil{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;border-radius:4px;
+  border:none;background:none;cursor:pointer;padding:2px;
+  flex-shrink:0;
+  transition:opacity 0.15s ease, background 0.1s ease;
+}
+.lw-pencil:hover{background:#eae8e3;}
+.lw-sub{font-size:12px;color:#888780;}
+
+.lw-edit-row{display:none;align-items:center;gap:5px;flex-wrap:nowrap;}
+.lw-edit-row.active{display:flex;}
+.lw-zip-input{
+  font-size:14px;font-weight:500;color:#2c2c2a;
+  font-family:inherit;border:none;
+  border-bottom:2px solid #3884a4;
+  background:transparent;outline:none;
+  padding:0 2px;width:52px;line-height:1.3;border-radius:0;
+}
+.lw-rad-input{
+  font-size:12px;color:#888780;font-family:inherit;
+  border:none;border-bottom:1.5px solid #b4b2a9;
+  background:transparent;outline:none;
+  padding:0 2px;width:28px;line-height:1.3;border-radius:0;
+}
+.lw-rad-input:focus{border-bottom-color:#3884a4;}
+.lw-edit-sep{font-size:12px;color:#b4b2a9;white-space:nowrap;}
+.lw-confirm{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border:none;border-radius:50%;
+  background:#3884a4;cursor:pointer;flex-shrink:0;
+  transition:background 0.13s,transform 0.1s;
+}
+.lw-confirm:hover{background:#2d6f8a;transform:scale(1.08);}
+.lw-confirm:disabled{opacity:0.6;cursor:not-allowed;}
+.lw-xbtn{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;border:none;border-radius:50%;
+  background:none;cursor:pointer;flex-shrink:0;
+  color:#b4b2a9;transition:color 0.13s;padding:0;
+}
+.lw-xbtn:hover{color:#5f5e5a;}
+.lw-formerr{font-size:11px;color:#a32d2d;margin-top:2px;}
+
+.gw-tip{position:relative;flex-shrink:0;overflow:visible;}
+.gw-tooltip{
+  position:absolute;bottom:calc(100% + 8px);right:0;
+  background:#1a2e3b;color:white;font-size:12px;line-height:1.5;
+  padding:8px 12px;border-radius:10px;width:190px;
+  opacity:0;transform:translateY(4px) scale(0.97);
+  transition:opacity 0.18s ease,transform 0.18s ease;
+  pointer-events:none;white-space:normal;z-index:9999;
+}
+.gw-tip:hover .gw-tooltip{opacity:1;transform:translateY(0) scale(1);}
+.gw-arrow{position:absolute;bottom:-5px;right:12px;width:10px;height:10px;background:#1a2e3b;transform:rotate(45deg);border-radius:2px;}
+
+.gw-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  gap:0;height:32px;width:32px;min-width:32px;padding:0;
+  background:white;border:1.5px solid #3884a4;
+  border-radius:16px;font-family:inherit;font-weight:500;
+  cursor:pointer;overflow:hidden;white-space:nowrap;flex-shrink:0;
+  transition:width 0.42s cubic-bezier(0.34,1.32,0.64,1),
+              gap 0.28s ease,padding 0.28s ease,
+              background 0.18s ease,border-color 0.18s ease;
+}
+.gw-btn:hover:not([disabled]){width:162px;gap:6px;padding:0 13px 0 9px;background:#eef4fb;}
+.gw-btn:hover:not([disabled]) .gw-lbl{opacity:1;max-width:134px;}
+.gw-btn.gw-on{width:130px;gap:6px;padding:0 13px 0 9px;background:#eef4fb;}
+.gw-btn.gw-on .gw-lbl{opacity:1;max-width:110px;}
+.gw-btn.gw-ok{width:32px !important;gap:0 !important;padding:0 !important;background:#e1f5ee !important;border-color:#1d9e75 !important;}
+.gw-btn.gw-ok .gw-lbl{opacity:0 !important;max-width:0 !important;}
+.gw-btn.gw-err{width:164px;gap:6px;padding:0 13px 0 9px;background:#fcebeb;border-color:#e24b4a;}
+.gw-btn.gw-err .gw-lbl{opacity:1;max-width:140px;color:#791f1f !important;}
+.gw-btn.gw-err:hover{width:164px !important;gap:6px !important;padding:0 13px 0 9px !important;background:#fcebeb !important;border-color:#e24b4a !important;}
+.gw-btn.gw-err:hover .gw-lbl{opacity:1 !important;max-width:140px !important;color:#791f1f !important;}
+.gw-icon{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:16px;height:16px;min-width:16px;}
+.gw-lbl{font-size:13px;color:#3884a4;opacity:0;max-width:0;overflow:hidden;transition:opacity 0.16s ease 0.1s,max-width 0.32s ease;}
+</style>
+
+<div class="header-container">
+  <div class="rx-text-block">
+    <p class="rx-intro-text">
+      MyRxCard is a pharmacy savings card designed to help you and your family save money on your medications.
+    </p>
+  </div>
+
+  <div class="lw-card">
+    <div class="lw-left" id="lwLeft">
+
+      <div class="lw-display-row" id="lwDisplayRow">
+        <span class="lw-zip-text" id="lwZipTxt">Detecting location...</span>
+        <button class="lw-pencil" id="lwPencil" title="Edit location">
+          <svg width="12" height="12" viewBox="0 0 528.899 528.899"
+               xmlns="http://www.w3.org/2000/svg" style="display:block;">
+            <path fill="#b4b2a9"
+                  d="M328.883,89.125l107.59,107.589l-272.34,272.34L56.604,361.465L328.883,89.125z
+                     M518.113,63.177l-47.981-47.981c-18.543-18.543-48.653-18.543-67.259,0l-45.961,45.961
+                     l107.59,107.59l53.611-53.611C532.495,100.753,532.495,77.559,518.113,63.177z
+                     M0.3,512.69c-1.958,8.812,5.998,16.708,14.811,14.565l119.891-29.069L27.473,390.597L0.3,512.69z"/>
+          </svg>
+        </button>
+      </div>
+      <span class="lw-sub" id="lwSubTxt">Finding pharmacies near you</span>
+
+      <div class="lw-edit-row" id="lwEditRow">
+        <input class="lw-zip-input" id="lwZipIn" type="text"
+               maxlength="5" inputmode="numeric" placeholder="ZIP">
+        <span class="lw-edit-sep">within</span>
+        <input class="lw-rad-input" id="lwRadIn" type="text"
+               inputmode="numeric" placeholder="10">
+        <span class="lw-edit-sep">mi</span>
+        <button class="lw-confirm" id="lwConfirm" title="Save">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+               stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </button>
+        <button class="lw-xbtn" id="lwCancelBtn" title="Cancel">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="lw-formerr" id="lwErr" style="display:none;"></div>
+    </div>
+
+    <div class="gw-tip">
+      <button class="gw-btn" id="gwBtn">
+        <span class="gw-icon" id="gwIcon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="#3884a4" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <line x1="12" y1="2"  x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="2"  y1="12" x2="6"  y2="12"/>
+            <line x1="18" y1="12" x2="22" y2="12"/>
+          </svg>
+        </span>
+        <span class="gw-lbl" id="gwLbl">Use my location</span>
+      </button>
+      <div class="gw-tooltip">
+        <div style="font-weight:500;margin-bottom:2px;font-size:12px;">Get precise local prices</div>
+        <div style="color:rgba(255,255,255,0.7);font-size:11px;">Uses GPS to find exact pharmacies near you.</div>
+        <div class="gw-arrow"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  const left       = document.getElementById('lwLeft');
+  const displayRow = document.getElementById('lwDisplayRow');
+  const editRow    = document.getElementById('lwEditRow');
+  const zipTxt     = document.getElementById('lwZipTxt');
+  const subTxt     = document.getElementById('lwSubTxt');
+  const pencil     = document.getElementById('lwPencil');
+  const zipIn      = document.getElementById('lwZipIn');
+  const radIn      = document.getElementById('lwRadIn');
+  const confirm$   = document.getElementById('lwConfirm');
+  const cancelBtn  = document.getElementById('lwCancelBtn');
+  const err$       = document.getElementById('lwErr');
+  const gwBtn      = document.getElementById('gwBtn');
+  const gwIcon     = document.getElementById('gwIcon');
+  const gwLbl      = document.getElementById('gwLbl');
+
+  const CHECK_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  const SPIN_SVG  = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:lspin 0.8s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`;
+
+  const isTouch = window.matchMedia('(hover: none)').matches;
+
+  function expandBtn() {
+    gwBtn.style.width = '162px';
+    gwBtn.style.gap = '6px';
+    gwBtn.style.padding = '0 13px 0 9px';
+    gwBtn.style.background = '#eef4fb';
+    gwLbl.style.opacity = '1';
+    gwLbl.style.maxWidth = '134px';
+  }
+
+  function collapseBtn() {
+    gwBtn.style.width = '';
+    gwBtn.style.gap = '';
+    gwBtn.style.padding = '';
+    gwBtn.style.background = '';
+    gwLbl.style.opacity = '';
+    gwLbl.style.maxWidth = '';
+  }
+
+  function refresh() {
+    zipTxt.textContent = (typeof userZip !== 'undefined' ? userZip : '') + ' ' + (typeof userCity !== 'undefined' ? userCity : '') + ', ' + (typeof userState !== 'undefined' ? userState : '');
+    subTxt.textContent = 'Searching within ' + (typeof userRadius !== 'undefined' ? userRadius : '10') + ' miles';
+  }
+
+  function tryRefresh() {
+    if (typeof userZip !== 'undefined') {
+      refresh();
+    } else {
+      setTimeout(tryRefresh, 150);
+    }
+  }
+
+  function openEdit() {
+    editRow.classList.add('active');
+    displayRow.style.display = 'none';
+    subTxt.style.display = 'none';
+    err$.style.display = 'none';
+    zipIn.value = (typeof userZip !== 'undefined' ? userZip : '') || '';
+    radIn.value = (typeof userRadius !== 'undefined' ? userRadius : '10') || '10';
+    if (!isTouch) {
+      pencil.style.opacity = '0';
+      pencil.style.pointerEvents = 'none';
+    }
+    zipIn.focus();
+    zipIn.select();
+  }
+
+  function closeEdit() {
+    editRow.classList.remove('active');
+    displayRow.style.display = 'flex';
+    subTxt.style.display = 'block';
+    err$.style.display = 'none';
+    if (isTouch) {
+      pencil.style.opacity = '0.4';
+      pencil.style.pointerEvents = 'auto';
+    }
+  }
+
+  function maybeTriggerSearch() {
+    const input = document.getElementById('inputDrugs');
+    const dosage = document.getElementById('dosageDropdown');
+    const form = document.getElementById('formDropdown');
+
+    if (
+      typeof triggerSearch === 'function' &&
+      input && dosage && form &&
+      input.value && dosage.value && form.value
+    ) {
+      triggerSearch();
+    }
+  }
+
+ function syncLocation(zip, city, state, radius, source) {
+  // Always update user-facing search location
+  userZip = zip;
+  userCity = city;
+  userState = state;
+  userRadius = radius || '10';
+
+  // Only GPS is allowed to update backend tracking location
+  // Manual ZIP edits must NEVER touch these fields
+  if (source === 'gps') {
+    if (typeof ipDetectedZip !== 'undefined') ipDetectedZip = zip;
+    if (typeof ipDetectedCity !== 'undefined') ipDetectedCity = city;
+    if (typeof ipDetectedState !== 'undefined') ipDetectedState = state;
+    if (typeof ipDetectedSource !== 'undefined') ipDetectedSource = 'gps';
+  }
+
+  if (typeof saveLocationToLocalStorage === 'function') {
+    saveLocationToLocalStorage(userZip, userCity, userState, userRadius);
+  }
+
+  if (typeof displayLocation === 'function') {
+    displayLocation(userZip, userCity, userState, userRadius);
+  }
+}
+
+  if (isTouch) {
+    pencil.style.opacity = '0.4';
+    pencil.style.pointerEvents = 'auto';
+  } else {
+    pencil.style.opacity = '0';
+    pencil.style.pointerEvents = 'none';
+    left.addEventListener('mouseenter', () => {
+      pencil.style.opacity = '1';
+      pencil.style.pointerEvents = 'auto';
+    });
+    left.addEventListener('mouseleave', () => {
+      if (!editRow.classList.contains('active')) {
+        pencil.style.opacity = '0';
+        pencil.style.pointerEvents = 'none';
+      }
+    });
+  }
+
+  if (isTouch) {
+    setTimeout(() => {
+      expandBtn();
+      setTimeout(() => collapseBtn(), 1500);
+    }, 600);
+  }
+
+  zipTxt.addEventListener('click', e => {
+    e.stopPropagation();
+    openEdit();
+  });
+
+  pencil.addEventListener('click', e => {
+    e.stopPropagation();
+    openEdit();
+  });
+
+  cancelBtn.addEventListener('click', () => {
+    closeEdit();
+    refresh();
+  });
+
+  document.addEventListener('click', e => {
+    if (editRow.classList.contains('active') && !left.contains(e.target)) {
+      closeEdit();
+      refresh();
+    }
+  });
+
+  confirm$.addEventListener('click', async () => {
+    const z = zipIn.value.trim();
+    const r = radIn.value.trim() || '10';
+    err$.style.display = 'none';
+
+    const errs = [];
+    if (!/^\d{5}$/.test(z)) errs.push('Invalid ZIP');
+    const rn = Number(r);
+    if (isNaN(rn) || rn < 1 || rn > 500) errs.push('Radius 1–500');
+
+    if (errs.length) {
+      err$.textContent = errs.join(' · ');
+      err$.style.display = 'block';
+      return;
+    }
+
+    confirm$.disabled = true;
+    confirm$.innerHTML = SPIN_SVG;
+
+    try {
+      const d = await fetch('https://api.zippopotam.us/us/' + z).then(r => r.json());
+      const city  = d.places?.[0]?.['place name'] || '';
+      const state = d.places?.[0]?.['state abbreviation'] || '';
+
+      syncLocation(z, city, state, r, 'manual');
+      refresh();
+      closeEdit();
+      maybeTriggerSearch();
+    } catch {
+      err$.textContent = 'ZIP not found — try again';
+      err$.style.display = 'block';
+    }
+
+    confirm$.disabled = false;
+    confirm$.innerHTML = CHECK_SVG;
+  });
+
+  zipIn.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirm$.click();
+    if (e.key === 'Escape') {
+      closeEdit();
+      refresh();
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      radIn.focus();
+    }
+  });
+
+  radIn.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirm$.click();
+    if (e.key === 'Escape') {
+      closeEdit();
+      refresh();
+    }
+  });
+
+  function setGwIcon(type) {
+    const s = type === 'ok' ? '#085041' : type === 'err' ? '#791f1f' : '#3884a4';
+    const m = {
+      cross:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${s}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>`,
+      spin:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${s}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="animation:lspin 0.9s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+      check:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${s}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:lpop 0.3s ease forwards"><polyline points="20 6 9 17 4 12"/></svg>`,
+      warn:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${s}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`
+    };
+    gwIcon.innerHTML = m[type];
+  }
+
+  function resetGw() {
+    gwBtn.className = 'gw-btn';
+    gwBtn.style.cssText = '';
+    gwLbl.style.color = '#3884a4';
+    gwLbl.textContent = 'Use my location';
+    setGwIcon('cross');
+    gwBtn.disabled = false;
+
+    if (isTouch) {
+      gwBtn.style.width = '32px';
+      gwBtn.style.gap = '0';
+      gwBtn.style.padding = '0';
+      gwBtn.style.background = 'white';
+      gwLbl.style.opacity = '0';
+      gwLbl.style.maxWidth = '0';
+    }
+  }
+
+  gwBtn.addEventListener('click', async () => {
+    if (gwBtn.disabled) return;
+
+    gwBtn.disabled = true;
+    gwBtn.className = 'gw-btn gw-on';
+    gwLbl.textContent = 'Detecting...';
+    gwLbl.style.color = '#3884a4';
+    setGwIcon('spin');
+
+    const result = await Promise.race([
+      (typeof detectByBrowser === 'function' ? detectByBrowser() : Promise.resolve(null)),
+      new Promise(r => setTimeout(() => r(null), 12000))
+    ]);
+
+    if (result) {
+      syncLocation(result.zip, result.city, result.state, userRadius || '10', 'gps');
+
+      try {
+        localStorage.setItem('ip_zip', result.zip);
+        localStorage.setItem('ip_city', result.city);
+        localStorage.setItem('ip_state', result.state);
+        localStorage.setItem('location_source', 'gps');
+      } catch (e) {}
+
+      refresh();
+      maybeTriggerSearch();
+
+      setGwIcon('check');
+      gwBtn.className = 'gw-btn gw-ok';
+      setTimeout(() => resetGw(), 2000);
+    } else {
+      gwBtn.className = 'gw-btn gw-err';
+      gwLbl.textContent = 'Permission denied';
+      gwLbl.style.color = '#791f1f';
+      setGwIcon('warn');
+
+      setTimeout(() => {
+        gwLbl.textContent = 'Update settings';
+      }, 1800);
+
+      setTimeout(() => resetGw(), 4500);
+    }
+
+    gwBtn.disabled = false;
+  });
+
+  tryRefresh();
+})();
+</script>
