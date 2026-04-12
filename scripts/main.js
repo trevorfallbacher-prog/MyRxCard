@@ -775,7 +775,7 @@ function injectGenericPricesOnCards(genericPharmacies, brandDrugName, genericDru
             'text-align:right', 'line-height:1.3'
         ].join(';');
         badge.innerHTML = `
-            <div style="font-size:11px;color:#9a9a92;">${genericDrugName}: $${genericPrice.toFixed(2)}</div>
+            <div style="font-size:11px;color:#9a9a92;">Generic: $${genericPrice.toFixed(2)}</div>
             ${saving > 0.01 ? `<div style="font-size:10px;font-weight:600;color:#2a7a4f;">save $${saving.toFixed(2)}</div>` : ''}
         `;
         card.style.position = 'relative';
