@@ -96,6 +96,38 @@
     return getActiveStatus(row).toLowerCase() === 'active';
   }
 
+  // ---------- NDC normalization ----------
+  function normalizeNDC(ndc) {
+    const digits = String(ndc ?? '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.length >= 11 ? digits.slice(-11) : digits.padStart(11, '0');
+  }
+
+  // ---------- Xano price helpers ----------
+  function parseXanoPrice(row) {
+    const raw = row?.PatientPay ?? row?.Price_w_NADAC;
+    if (raw == null || raw === '') return NaN;
+    const n = typeof raw === 'number'
+      ? raw
+      : parseFloat(String(raw).replace(/[^\d.\-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : NaN;
+  }
+  function hasValidXanoPrice(row) {
+    return Number.isFinite(parseXanoPrice(row));
+  }
+  // Cheapest priced row wins; if no row has a price, return the first row so
+  // its NDC is still available for the tier-2 Phoenix AS001 fallback.
+  function pickBestXanoRow(rows = []) {
+    if (!rows.length) return null;
+    const priced = rows.filter(hasValidXanoPrice);
+    if (priced.length) {
+      return priced.reduce((best, r) =>
+        parseXanoPrice(r) < parseXanoPrice(best) ? r : best
+      );
+    }
+    return rows[0];
+  }
+
   // ---------- Strip trailing store numbers like "#1234", "No. 1234", "Store 1234" ----------
   function cleanPharmacyName(name = '') {
     let n = String(name).trim();
@@ -201,14 +233,16 @@
     }
   }
 
-  // ---------- API: Phoenix PBM (competitor pharmacies) ----------
-  async function fetchPhoenixPrices({ ndc, quantity, zip, radius }) {
+  // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
+  // groupNum defaults to TPD001 (full market / competitors). Pass 'AS001' for
+  // the altScripts-network-only formulary used as the tier-2 price fallback.
+  async function fetchPhoenixPrices({ ndc, quantity, zip, radius, groupNum = 'TPD001' }) {
     const payload = {
       memberNumber: '01',
-      ndc: String(ndc || '').replace(/-/g, ''),
+      ndc: normalizeNDC(ndc),
       quantity: Number(quantity) || 30,
       daysSupply: 3,
-      groupNum: 'TPD001',
+      groupNum,
       zip: zip || '00000',
       radius: radius || '10',
       maxRecords: 3000
@@ -626,13 +660,17 @@
 
         currentQuantity = quantity;
 
-        // Find exact row from prior fetch
-        const selectedDrug = (drugData || []).find(d =>
-          d?.MedDrugName === drugName && Number(d?.Quantity) === quantity
+        // Gather ALL active Xano rows matching name+qty, then pick the cheapest
+        // priced one (falls back to first row if none have prices, so its NDC
+        // is still usable for the tier-2 Phoenix AS001 lookup).
+        const matchingRows = (drugData || []).filter(d =>
+          d?.MedDrugName === drugName &&
+          Number(d?.Quantity) === quantity &&
+          isActiveRow(d)
         );
+        const selectedDrug = pickBestXanoRow(matchingRows);
 
-        // ✅ Hard block: do not render if not Active
-        if (!selectedDrug || !isActiveRow(selectedDrug)) {
+        if (!selectedDrug) {
           if (errEl) errEl.textContent = 'This drug is not currently active in the formulary.';
           if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
           setResultsVisible(false);
@@ -642,30 +680,60 @@
         if (errEl) errEl.textContent = '';
 
         const ndcRaw = selectedDrug.NDC ?? selectedDrug.Ndc ?? selectedDrug.ndc ?? '';
-        const ndcClean = String(ndcRaw).replace(/-/g, '');
+        const ndcClean = normalizeNDC(ndcRaw);
         currentNDC = ndcClean;
 
-        const rawPay = selectedDrug.PatientPay ?? selectedDrug.Price_w_NADAC ?? '';
-        const payText = (typeof rawPay === 'number')
-          ? `$${rawPay.toFixed(2)}`
-          : (String(rawPay).startsWith('$') ? String(rawPay) : (rawPay ? `$${rawPay}` : 'N/A'));
+        // ---------- 3-tier top-card price resolution ----------
+        // Tier 1: Xano special price (preferred).
+        // Tier 2: Phoenix AS001 cheapest [0] using the Xano NDC.
+        // Tier 3: no top card — fall through to competitor list only.
+        let payText = 'N/A';
+        let priceSource = null;
+        const xanoPrice = parseXanoPrice(selectedDrug);
+        if (Number.isFinite(xanoPrice)) {
+          payText = `$${xanoPrice.toFixed(2)}`;
+          priceSource = 'xano';
+        } else if (ndcClean) {
+          try {
+            const asRows = await fetchPhoenixPrices({
+              ndc: ndcClean,
+              quantity,
+              zip: userZip,
+              radius: userRadius,
+              groupNum: 'AS001'
+            });
+            const priced = asRows
+              .map(r => parseFloat(r?.Pricing?.PatientPay))
+              .filter(p => Number.isFinite(p) && p > 0)
+              .sort((a, b) => a - b);
+            if (priced.length) {
+              payText = `$${priced[0].toFixed(2)}`;
+              priceSource = 'phoenix-as001';
+            }
+          } catch (e) {
+            console.error('Phoenix AS001 fallback failed:', e);
+          }
+        }
+
+        const hasTopPrice = priceSource !== null;
 
         if (pharmacyListDiv) {
-          pharmacyListDiv.innerHTML = `
+          pharmacyListDiv.innerHTML = hasTopPrice ? `
             <div class="pharmacy-card"
                  data-pharmacy-name="altScripts"
                  data-price="${payText.replace(/^\$/, '')}"
                  data-drug-name="${selectedDrug.MedDrugName}"
                  data-quantity="${quantity}"
-                 data-ndc="${ndcClean}">
+                 data-ndc="${ndcClean}"
+                 data-price-source="${priceSource}">
               <h1 class="price">${payText}</h1>
               <h4>altScripts</h4>
               <p><!-- No address needed --></p>
             </div>
-          `;
+          ` : '';
         }
 
-        setResultsVisible(true);
+        setResultsVisible(hasTopPrice);
 
         const sd0  = document.getElementById('selected-drug-name');
         const sd1  = document.getElementById('selected-drug-name1');
@@ -677,14 +745,15 @@
         const spn1 = document.getElementById('selected-pharmacy-name1');
 
         const drugLabel = selectedDrug.MedDrugName || 'Unknown Drug';
+        const topPharmName = hasTopPrice ? 'altScripts' : 'Not Available';
         if (sd0) sd0.textContent = drugLabel;
         if (sd1) sd1.textContent = drugLabel;
         if (sq0) sq0.textContent = quantity;
         if (sq1) sq1.textContent = String(quantity);
         if (sp)  sp.textContent  = payText;
         if (sp1) sp1.textContent = payText;
-        if (spn)  spn.textContent = 'altScripts';
-        if (spn1) spn1.textContent = 'altScripts';
+        if (spn)  spn.textContent = topPharmName;
+        if (spn1) spn1.textContent = topPharmName;
 
         initializePharmacyCardListeners_SingleCard();
         await paintNextFrame();
@@ -696,7 +765,7 @@
           overallData: {
             MedDrugName: selectedDrug.MedDrugName,
             Quantity: quantity,
-            PatientPay: rawPay,
+            PatientPay: selectedDrug.PatientPay ?? selectedDrug.Price_w_NADAC ?? null,
             Ndc: ndcClean,
             Active_status: selectedDrug.Active_status
           }
