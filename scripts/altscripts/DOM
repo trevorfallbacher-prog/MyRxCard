@@ -1,0 +1,762 @@
+<script>
+(function () {
+  // ---------- Prepaint HIDE (prevents first-paint flicker) ----------
+  const PREPAINT_STYLE_ID = 'prepaint-hide-results';
+  (function ensurePrepaintHide() {
+    try {
+      if (!document.getElementById(PREPAINT_STYLE_ID)) {
+        const s = document.createElement('style');
+        s.id = PREPAINT_STYLE_ID;
+        s.textContent = '#results-div, #filtered-pharmacy-list { display: none !important; }';
+        document.head.appendChild(s);
+      }
+    } catch (_) {}
+  })();
+  function liftPrepaintHiding() {
+    const s = document.getElementById(PREPAINT_STYLE_ID);
+    if (s) s.remove();
+  }
+
+  // ---------- Config ----------
+  const XANO_BASE_URL = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:vOx1V0M0/AltScriptsCacheDrugData';
+  const apiKey = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
+  const baseUrl = 'https://phoenixapi.rxlogic.com';
+
+  // ---- Phoenix (mirror old working paths/headers) ----
+  const DRUGDATA_URL = `${baseUrl}/DrugData`; // (kept for parity)
+  const PHARMACY_RADIUS_PRICING_URL = `${baseUrl}/PharmacyRadiusPricing`; // POST
+  const PHOENIX_GET_HEADERS  = { apiKey };
+  const PHOENIX_POST_HEADERS = { 'Content-Type': 'application/json', apiKey };
+
+  // ---------- App state ----------
+  let drugData = [];
+  let recentSearches = [];
+  let userZip = null, userCity = null, userState = null, userRadius = null;
+  let currentNDC = '';            // cleaned NDC (no dashes)
+  let currentQuantity = null;     // exact quantity used for the last search
+
+  // Simple in-memory cache for DrugData lookups
+  const drugsCache = new Map();
+
+  // ---------- Loader (ref-counted to avoid early hide) ----------
+  let _loaderCount = 0;
+  function _ensureLoaderEl() {
+    let el = document.getElementById('dynamic-loader');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'dynamic-loader';
+      el.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:99999;background:rgba(0,0,0,.7)';
+      el.innerHTML = `
+        <div class="pill-container">
+          <div class="capsule"><div class="half half-left"></div><div class="half half-right"></div></div>
+          <div class="sparkles"><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span></div>
+          <h3 class="loading-message">Loading...</h3>
+        </div>`;
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function showLoader() { _loaderCount++; _ensureLoaderEl().style.display = 'flex'; }
+  async function hideLoader() {
+    _loaderCount = Math.max(0, _loaderCount - 1);
+    if (_loaderCount === 0) {
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const el = document.getElementById('dynamic-loader');
+      if (el) el.remove();
+    }
+  }
+  const paintNextFrame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  // ---------- Utils ----------
+  function debounce(fn, delay) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); }; }
+  function formatNumberWithCommas(num) { const n = parseFloat(num); if (Number.isNaN(n)) return '0.00'; return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function toTitleCaseWithSpecialRule(str) { return String(str || '').split(' ').map(w => w.length > 1 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w.toUpperCase()).join(' '); }
+
+  // ---------- Visibility helpers (use `hidden`) ----------
+  function setResultsVisible(isVisible) {
+    const el = document.getElementById('results-div');
+    if (!el) return;
+    if (isVisible) liftPrepaintHiding();
+    el.hidden = !isVisible;
+  }
+  function setCompetitorsVisible(isVisible) {
+    const el = document.getElementById('filtered-pharmacy-list');
+    if (!el) return;
+    if (isVisible) liftPrepaintHiding();
+    el.hidden = !isVisible;
+  }
+
+  // ---------- Activate_status gating ----------
+  function getActiveStatus(row) {
+    // Your Xano column is now Active_status
+    const v = row?.Active_status ?? row?.active_status ?? row?.Active_Status ?? row?.activeStatus ?? '';
+    return String(v).trim();
+  }
+  function isActiveRow(row) {
+    return getActiveStatus(row).toLowerCase() === 'active';
+  }
+
+  // ---------- Strip trailing store numbers like "#1234", "No. 1234", "Store 1234" ----------
+  function cleanPharmacyName(name = '') {
+    let n = String(name).trim();
+    n = n.replace(/\s*(?:-|,)?\s*(?:No\.?|Store)?\s*#?\s*\d{3,6}\s*$/i, '');
+    return n.trim();
+  }
+
+  // ---------- Chain-level key (collapse stores under one chain) ----------
+  function chainKey(pharm = {}) {
+    const raw = cleanPharmacyName(pharm?.Name || '');
+    return raw
+      .toLowerCase()
+      .replace(/\/+/g, ' ')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\b(pharmacy|pharmacies|rx|drugstore)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // ---------- Local text filter for drugs ----------
+  function filterDrugsLocal(list = [], query = '') {
+    const q = String(query || '').trim().toLowerCase();
+    const base = (list || []).filter(isActiveRow); // ✅ only Active
+    if (!q) return base;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return base.filter(row => {
+      const hay = [
+        row.MedDrugName,
+        row.GenericName,
+        row.BrandName,
+        row.NDC || row.Ndc || row.ndc
+      ].map(v => String(v || '').toLowerCase()).join(' | ');
+      return tokens.every(tok => hay.includes(tok));
+    });
+  }
+
+  // ---------- Inject CSS for disabled dropdowns ----------
+  function injectDisabledDropdownStyles() {
+    let styleEl = document.getElementById('disabled-dropdown-styles');
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'disabled-dropdown-styles';
+      styleEl.textContent = `
+        select:disabled {
+          background-color: #e6e6e6;
+          color: #666;
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+      `;
+      document.head.appendChild(styleEl);
+    }
+  }
+
+  // ---------- Location storage ----------
+  function saveLocationToLocalStorage(zip, city, state, radius, manual = false) {
+    localStorage.setItem('userZip', zip);
+    localStorage.setItem('userCity', city);
+    localStorage.setItem('userState', state);
+    localStorage.setItem('userRadius', radius);
+    if (manual) localStorage.setItem('userZipTimestamp', Date.now().toString());
+    else localStorage.removeItem('userZipTimestamp');
+  }
+  function loadLocationFromLocalStorage() {
+    const ts = localStorage.getItem('userZipTimestamp');
+    const expired = ts && (Date.now() - parseInt(ts, 10) > 24 * 60 * 60 * 1000);
+    if (expired) {
+      ['userZip', 'userCity', 'userState', 'userRadius', 'userZipTimestamp'].forEach(k => localStorage.removeItem(k));
+      return { zip: null, city: null, state: null, radius: null };
+    }
+    return {
+      zip: localStorage.getItem('userZip'),
+      city: localStorage.getItem('userCity'),
+      state: localStorage.getItem('userState'),
+      radius: localStorage.getItem('userRadius')
+    };
+  }
+  function ensureLocationDefaults() {
+    if (!userZip) userZip = '00000';
+    if (!userCity) userCity = 'Default City';
+    if (!userState) userState = 'Default State';
+    if (!userRadius) userRadius = '10';
+  }
+
+  // ---------- API: Xano (formulary) ----------
+  async function fetchDrugs(query = '') {
+    const key = (query ? String(query).toLowerCase() : '__ALL__');
+    if (drugsCache.has(key)) return drugsCache.get(key);
+    try {
+      const url = query ? `${XANO_BASE_URL}?q=${encodeURIComponent(query)}` : XANO_BASE_URL;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+
+      const arrRaw = Array.isArray(data) ? data : [];
+      const arr = arrRaw.filter(isActiveRow); // ✅ cache only Active
+
+      drugsCache.set(key, arr);
+      return arr;
+    } catch (e) {
+      console.error('Error fetching drugs:', e);
+      return [];
+    }
+  }
+
+  // ---------- API: Phoenix PBM (competitor pharmacies) ----------
+  async function fetchPhoenixPrices({ ndc, quantity, zip, radius }) {
+    const payload = {
+      memberNumber: '01',
+      ndc: String(ndc || '').replace(/-/g, ''),
+      quantity: Number(quantity) || 30,
+      daysSupply: 3,
+      groupNum: 'TPD001',
+      zip: zip || '00000',
+      radius: radius || '10',
+      maxRecords: 3000
+    };
+
+    const res = await fetch(PHARMACY_RADIUS_PRICING_URL, {
+      method: 'POST',
+      headers: PHOENIX_POST_HEADERS,
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`Phoenix ${res.status} ${res.statusText}${txt ? ` — ${txt}` : ''}`);
+    }
+
+    const data = await res.json();
+    const rows = Array.isArray(data?.Response) ? data.Response : [];
+    return rows.filter(p => p?.Pricing?.PatientPay && p?.Pharmacy?.Name);
+  }
+
+  // ---------- CONSOLIDATE: one per CHAIN (cheapest representative) ----------
+  function consolidateUniquePharmacies(rows = []) {
+    const map = new Map();
+    for (const r of rows) {
+      const price = Number(r?.Pricing?.PatientPay);
+      if (!Number.isFinite(price)) continue;
+
+      const key = chainKey(r?.Pharmacy);
+      if (!key) continue;
+
+      const existing = map.get(key);
+      if (!existing || price < Number(existing.Pricing.PatientPay)) {
+        map.set(key, r);
+      }
+    }
+
+    return [...map.values()].sort(
+      (a, b) => Number(a.Pricing.PatientPay) - Number(b.Pricing.PatientPay)
+    );
+  }
+
+  // ---------- Render competitors (chain-collapsed, NO ADDRESSES) ----------
+  function renderPhoenixOtherPharmacies(list = []) {
+    const listDiv = document.getElementById('filtered-pharmacy-list');
+    if (!listDiv) return;
+
+    setCompetitorsVisible(true);
+    if (!list.length) {
+      listDiv.innerHTML = '<div class="pharmacy-card1"><p>No other pharmacies returned.</p></div>';
+      return;
+    }
+
+    listDiv.innerHTML = list.map(p => {
+      const rawName  = (p.Pharmacy?.Name || 'Unknown');
+      const name     = cleanPharmacyName(rawName);
+      const price    = Number(p.Pricing?.PatientPay);
+
+      return `
+        <div class="pharmacy-card1" data-pharmacy="${name}">
+          <div class="pharmacy-details">
+            <h4>${name}</h4>
+          </div>
+          <div class="pharmacy-price">
+            <h1 class="price">$${Number.isFinite(price) ? price.toFixed(2) : 'N/A'}</h1>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ---------- DOM after ready ----------
+  document.addEventListener('DOMContentLoaded', () => {
+    const inputField         = document.getElementById('inputDrugs');
+    const suggestionsDiv     = document.getElementById('drugSuggestions');
+    const quantityDropdown   = document.getElementById('quantityDropdown');
+    const pharmacyListDiv    = document.getElementById('pinnedPharmacyList');
+    const recentSearchesList = document.getElementById('recentSearchesList');
+    const resultsDiv         = document.getElementById('results-div');
+    const searchBtn          = document.getElementById('searchButton');
+    const errEl              = document.getElementById('errorMessage');
+    const otherListDiv       = document.getElementById('filtered-pharmacy-list');
+
+    if (resultsDiv) resultsDiv.hidden = true;
+    if (otherListDiv) otherListDiv.hidden = true;
+
+    if (quantityDropdown) quantityDropdown.disabled = true;
+    injectDisabledDropdownStyles();
+
+    // ----- Location bootstrapping -----
+    function displayLocation(zip, city, state, radius) {
+      const zipEl = document.getElementById('location-zip');
+      const cityEl = document.getElementById('location-city');
+      const stateEl = document.getElementById('location-state');
+      const radEl = document.getElementById('radius');
+      if (zipEl) zipEl.innerText = zip || 'N/A';
+      if (cityEl) cityEl.innerText = city || 'N/A';
+      if (stateEl) stateEl.innerText = state || 'N/A';
+      if (radEl) radEl.innerText = radius || '10';
+    }
+
+    const stored = loadLocationFromLocalStorage();
+    userZip = stored.zip; userCity = stored.city; userState = stored.state; userRadius = stored.radius;
+
+    if (!userZip || !userCity || !userState || !userRadius) {
+      (async function fetchLocationByIp() {
+        try {
+          const ip = (await (await fetch('https://api.ipify.org?format=json')).json()).ip;
+          const loc = await (await fetch(`https://ipapi.co/${ip}/json/`)).json();
+          userZip = loc.postal || '00000';
+          userCity = loc.city || 'Default City';
+          userState = loc.region || 'Default State';
+          userRadius = '10';
+          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, false);
+          displayLocation(userZip, userCity, userState, userRadius);
+        } catch (e) {
+          console.error('Error fetching location data:', e);
+          ensureLocationDefaults();
+          displayLocation(userZip, userCity, userState, userRadius);
+        }
+      })();
+    } else {
+      displayLocation(userZip, userCity, userState, userRadius);
+    }
+
+    // ----- Location form -----
+    const form = document.getElementById('update-location-form');
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const zip = document.getElementById('zip')?.value.trim();
+        let radius = document.getElementById('search-radius')?.value.trim();
+        const failBox = document.querySelector('.w-form-fail');
+        if (!zip) return;
+        if (!radius) radius = '10';
+
+        const errors = [];
+        if (!/^\d{5}(-\d{4})?$/.test(zip)) errors.push('Invalid ZIP code format. Use 12345 or 12345-6789.');
+        const rNum = Number(radius);
+        if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) errors.push('Invalid radius. Enter a number between 1 and 500.');
+
+        if (errors.length) {
+          if (failBox) { failBox.innerText = errors.join('\n'); failBox.style.display = 'block'; }
+          return;
+        } else if (failBox) { failBox.innerText = ''; failBox.style.display = 'none'; }
+
+        try {
+          const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
+          userCity = data.places?.[0]?.['place name'] || '';
+          userState = data.places?.[0]?.['state abbreviation'] || '';
+          userZip = zip;
+          userRadius = radius;
+
+          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, true);
+          displayLocation(userZip, userCity, userState, userRadius);
+
+          if (currentNDC && Number.isFinite(currentQuantity)) {
+            await fetchAndRenderCompetitors({ ndc: currentNDC, quantity: currentQuantity });
+          }
+        } catch (err) {
+          console.error('Error fetching ZIP code data:', err);
+          displayLocation('Error', 'Error', 'Error', 'Error');
+        }
+      });
+
+      const zipInput = document.getElementById('zip');
+      if (zipInput) {
+        zipInput.addEventListener('input', debounce(async () => {
+          const zip = zipInput.value.trim();
+          let radius = document.getElementById('search-radius')?.value.trim() || '10';
+          if (!/^\d{5}(-\d{4})?$/.test(zip)) return;
+          const rNum = Number(radius);
+          if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) return;
+
+          try {
+            const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
+            const previewCity = data.places?.[0]?.['place name'] || '';
+            const previewState = data.places?.[0]?.['state abbreviation'] || '';
+            displayLocation(zip, previewCity, previewState, radius);
+          } catch (err) {
+            console.error('ZIP preview failed:', err);
+          }
+        }, 350));
+      }
+    }
+
+    // ----- Recents -----
+    function storeRecentSearch(drugName, details) {
+      let stored = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      const idx = stored.findIndex(it => it.name === drugName);
+      if (idx >= 0) stored[idx] = { name: drugName, details };
+      else {
+        stored.unshift({ name: drugName, details });
+        if (stored.length > 5) stored.pop();
+      }
+      localStorage.setItem('recentSearches', JSON.stringify(stored));
+      recentSearches = stored;
+    }
+    function storeAndDisplayRecent5Search(drugName, drugDetails) {
+      storeRecentSearch(drugName, drugDetails);
+      displayRecentSearches();
+    }
+    function displayRecentSearches() {
+      if (!recentSearchesList) return;
+      recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      recentSearchesList.innerHTML = (recentSearches || []).map(s => `
+        <div class="search-item" data-drug="${s.name}" data-details="${encodeURIComponent(JSON.stringify(s.details || {}))}">
+          ${s.name}<div class="clear-search" data-role="clear">x</div>
+        </div>`).join('');
+
+      if (!recentSearchesList._delegated) {
+        recentSearchesList.addEventListener('click', async (ev) => {
+          const target = ev.target;
+          const item = target.closest('.search-item');
+          if (!item) return;
+
+          if (target.dataset.role === 'clear') {
+            const name = item.dataset.drug;
+            recentSearches = (recentSearches || []).filter(s => s.name !== name);
+            localStorage.setItem('recentSearches', JSON.stringify(recentSearches));
+            displayRecentSearches();
+            return;
+          }
+
+          const drugName = item.dataset.drug;
+          const details = JSON.parse(decodeURIComponent(item.getAttribute('data-details') || '{}'));
+          [...recentSearchesList.querySelectorAll('.search-item')].forEach(i => i.classList.remove('active-search'));
+          item.classList.add('active-search');
+          if (inputField) inputField.value = drugName;
+
+          showLoader();
+          await paintNextFrame();
+          await recentSearchesDataFetch(drugName, details);
+          hideLoader();
+        }, { passive: true });
+        recentSearchesList._delegated = true;
+      }
+    }
+    function loadRecentSearches() {
+      recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      displayRecentSearches();
+    }
+
+    // ---------- Suggestions ----------
+    function paintSuggestions(drugs) {
+      if (!suggestionsDiv) return;
+      suggestionsDiv.innerHTML = '';
+
+      if (!drugs || drugs.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'drug-option';
+        empty.style.opacity = '0.7';
+        empty.textContent = 'No matches';
+        suggestionsDiv.appendChild(empty);
+        return;
+      }
+
+      const sorted = [...drugs].sort((a, b) =>
+        String(a.MedDrugName || '').localeCompare(String(b.MedDrugName || ''), 'en', { sensitivity: 'base' })
+      );
+
+      const unique = new Set();
+      sorted.forEach(drug => {
+        if (unique.has(drug.MedDrugName)) return;
+        unique.add(drug.MedDrugName);
+
+        const opt = document.createElement('div');
+        opt.className = 'drug-option';
+        opt.textContent = drug.MedDrugName;
+
+        opt.addEventListener('click', () => {
+          if (inputField) inputField.value = drug.MedDrugName;
+
+          const matches = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
+          const qSet = new Set();
+          matches.forEach(row => {
+            const q = Number(row.Quantity);
+            if (Number.isFinite(q) && q > 0) qSet.add(q);
+          });
+          const quantities = [...qSet].sort((a, b) => a - b);
+
+          if (quantityDropdown) {
+            quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+            quantities.forEach(q => {
+              const o = document.createElement('option');
+              o.value = q;
+              o.textContent = q;
+              quantityDropdown.appendChild(o);
+            });
+            quantityDropdown.disabled = quantities.length === 0;
+          }
+
+          suggestionsDiv.innerHTML = '';
+          if (errEl) errEl.textContent = '';
+        });
+
+        suggestionsDiv.appendChild(opt);
+      });
+    }
+
+    // ----- Show full list on focus -----
+    if (inputField) {
+      inputField.addEventListener('focus', debounce(async () => {
+        let all = drugsCache.get('__ALL__');
+        if (!all) all = await fetchDrugs('');
+        drugData = all;
+        const q = (inputField.value || '').trim();
+        const toShow = q ? filterDrugsLocal(all, q) : all;
+        paintSuggestions(toShow);
+      }, 50));
+    }
+
+    // ----- Typeahead: local filter first -----
+    const triggerInputFieldChange = async (event) => {
+      const query = (event.target.value || '').trim();
+      let all = drugsCache.get('__ALL__');
+      if (!all) all = await fetchDrugs('');
+      const filtered = filterDrugsLocal(all, query);
+      drugData = filtered;
+      paintSuggestions(filtered);
+    };
+    const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 120);
+    if (inputField) inputField.addEventListener('input', debouncedTriggerInputFieldChange);
+
+    // ----- Run search only when a quantity is selected -----
+    if (quantityDropdown) {
+      quantityDropdown.addEventListener('change', async () => {
+        const drugName = (inputField?.value || '').trim();
+        const qty = parseInt(quantityDropdown.value, 10);
+        if (drugName && Number.isFinite(qty) && qty > 0) {
+          currentQuantity = qty;
+          await handleDrugSearch(drugName, qty);
+        }
+      });
+    }
+
+    // ----- Recents quick fetch (no auto-search) -----
+    const recentSearchesDataFetch = async (query, details = {}) => {
+      try {
+        const drugs = await fetchDrugs(query); // already filtered to Active
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+        drugData = drugs;
+
+        const qSet = new Set();
+        drugs.forEach(row => {
+          if (row.MedDrugName?.toLowerCase() === query.toLowerCase()) {
+            const q = Number(row.Quantity);
+            if (Number.isFinite(q) && q > 0) qSet.add(q);
+          }
+        });
+        const quantities = [...qSet].sort((a,b)=>a-b);
+
+        if (quantityDropdown) {
+          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+          quantities.forEach(q => {
+            const o = document.createElement('option');
+            o.value = q; o.textContent = q;
+            quantityDropdown.appendChild(o);
+          });
+          quantityDropdown.disabled = quantities.length === 0;
+
+          const preferred = Number(details.quantity);
+          if (Number.isFinite(preferred) && quantities.includes(preferred)) {
+            quantityDropdown.value = String(preferred);
+          }
+        }
+
+        if (inputField) inputField.value = query;
+      } catch (e) {
+        console.error('Error in recentSearchesDataFetch:', e);
+        if (errEl) errEl.textContent = 'Failed to fetch drug data.';
+      }
+    };
+
+    // ----- ALWAYS fetch + render competitors for the current selection -----
+    async function fetchAndRenderCompetitors({ ndc, quantity }) {
+      try {
+        if (_loaderCount === 0) showLoader();
+        await paintNextFrame();
+
+        const rows = await fetchPhoenixPrices({
+          ndc,
+          quantity,
+          zip: userZip,
+          radius: userRadius
+        });
+        const uniqueRows = consolidateUniquePharmacies(rows);
+        renderPhoenixOtherPharmacies(uniqueRows);
+      } catch (err) {
+        console.error('Competitor fetch failed:', err);
+        const otherListDiv = document.getElementById('filtered-pharmacy-list');
+        if (otherListDiv) {
+          setCompetitorsVisible(true);
+          otherListDiv.innerHTML = '<div class="pharmacy-card1"><p>Failed to load other pharmacies.</p></div>';
+        }
+        if (errEl) errEl.textContent = 'Failed to load other pharmacies.';
+      } finally {
+        hideLoader();
+      }
+    }
+
+    // ----- Main search (owns loader lifecycle) -----
+    async function handleDrugSearch(drugName, quantity = 30) {
+      if (_loaderCount === 0) showLoader();
+      await paintNextFrame();
+      const t0 = performance.now();
+
+      const pharmacyListDiv = document.getElementById('pinnedPharmacyList');
+      try {
+        quantity = parseInt(quantity, 10);
+        if (!drugName || !Number.isFinite(quantity) || quantity <= 0) {
+          if (errEl) errEl.textContent = 'Invalid search parameters.';
+          setResultsVisible(false);
+          return;
+        }
+
+        currentQuantity = quantity;
+
+        // Find exact row from prior fetch
+        const selectedDrug = (drugData || []).find(d =>
+          d?.MedDrugName === drugName && Number(d?.Quantity) === quantity
+        );
+
+        // ✅ Hard block: do not render if not Active
+        if (!selectedDrug || !isActiveRow(selectedDrug)) {
+          if (errEl) errEl.textContent = 'This drug is not currently active in the formulary.';
+          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+          setResultsVisible(false);
+          return;
+        }
+
+        if (errEl) errEl.textContent = '';
+
+        const ndcRaw = selectedDrug.NDC ?? selectedDrug.Ndc ?? selectedDrug.ndc ?? '';
+        const ndcClean = String(ndcRaw).replace(/-/g, '');
+        currentNDC = ndcClean;
+
+        const rawPay = selectedDrug.PatientPay ?? selectedDrug.Price_w_NADAC ?? '';
+        const payText = (typeof rawPay === 'number')
+          ? `$${rawPay.toFixed(2)}`
+          : (String(rawPay).startsWith('$') ? String(rawPay) : (rawPay ? `$${rawPay}` : 'N/A'));
+
+        if (pharmacyListDiv) {
+          pharmacyListDiv.innerHTML = `
+            <div class="pharmacy-card"
+                 data-pharmacy-name="altScripts"
+                 data-price="${payText.replace(/^\$/, '')}"
+                 data-drug-name="${selectedDrug.MedDrugName}"
+                 data-quantity="${quantity}"
+                 data-ndc="${ndcClean}">
+              <h1 class="price">${payText}</h1>
+              <h4>altScripts</h4>
+              <p><!-- No address needed --></p>
+            </div>
+          `;
+        }
+
+        setResultsVisible(true);
+
+        const sd0  = document.getElementById('selected-drug-name');
+        const sd1  = document.getElementById('selected-drug-name1');
+        const sq0  = document.getElementById('selected-quantity');
+        const sq1  = document.getElementById('selected-quantity1');
+        const sp   = document.getElementById('selected-price');
+        const sp1  = document.getElementById('selected-price1');
+        const spn  = document.getElementById('selected-pharmacy-name');
+        const spn1 = document.getElementById('selected-pharmacy-name1');
+
+        const drugLabel = selectedDrug.MedDrugName || 'Unknown Drug';
+        if (sd0) sd0.textContent = drugLabel;
+        if (sd1) sd1.textContent = drugLabel;
+        if (sq0) sq0.textContent = quantity;
+        if (sq1) sq1.textContent = String(quantity);
+        if (sp)  sp.textContent  = payText;
+        if (sp1) sp1.textContent = payText;
+        if (spn)  spn.textContent = 'altScripts';
+        if (spn1) spn1.textContent = 'altScripts';
+
+        initializePharmacyCardListeners_SingleCard();
+        await paintNextFrame();
+        await paintNextFrame();
+
+        storeAndDisplayRecent5Search(drugName, {
+          quantity,
+          price: payText,
+          overallData: {
+            MedDrugName: selectedDrug.MedDrugName,
+            Quantity: quantity,
+            PatientPay: rawPay,
+            Ndc: ndcClean,
+            Active_status: selectedDrug.Active_status
+          }
+        });
+
+        await fetchAndRenderCompetitors({ ndc: ndcClean, quantity });
+
+      } catch (e) {
+        console.error('handleDrugSearch error:', e);
+        if (errEl) errEl.textContent = 'Something went wrong loading price.';
+        setResultsVisible(false);
+      } finally {
+        const t1 = performance.now();
+        console.log('total handleDrugSearch ms:', Math.round(t1 - t0));
+        hideLoader();
+      }
+    }
+
+    function initializePharmacyCardListeners_SingleCard() {
+      const card = document.querySelector('.pharmacy-card');
+      if (!card) return;
+      card.classList.add('selected');
+      card.addEventListener('click', (e) => {
+        const sel  = e.currentTarget;
+        const data = sel.dataset;
+        const spn  = document.getElementById('selected-pharmacy-name');
+        const spr  = document.getElementById('selected-price');
+        const spn1 = document.getElementById('selected-pharmacy-name1');
+        const spr1 = document.getElementById('selected-price1');
+        const sdn0 = document.getElementById('selected-drug-name');
+        const sdn1 = document.getElementById('selected-drug-name1');
+        const sq0  = document.getElementById('selected-quantity');
+        const sq1  = document.getElementById('selected-quantity1');
+
+        if (spn)  spn.textContent  = data.pharmacyName || 'altScripts';
+        if (spr)  spr.textContent  = `$${data.price}`;
+        if (spn1) spn1.textContent = data.pharmacyName || 'altScripts';
+        if (spr1) spr1.textContent = `$${data.price}`;
+        if (sdn0) sdn0.textContent = data.drugName || '';
+        if (sdn1) sdn1.textContent = data.drugName || '';
+        if (sq0)  sq0.textContent  = data.quantity || '';
+        if (sq1)  sq1.textContent  = data.quantity || '';
+      }, { passive: true });
+    }
+
+    // ----- Field-level clears -----
+    const clearErr = () => { if (errEl) errEl.textContent = ''; };
+    if (inputField) inputField.addEventListener('input', clearErr);
+    const quantityDropdownEl = document.getElementById('quantityDropdown');
+    if (quantityDropdownEl) quantityDropdownEl.addEventListener('change', clearErr);
+
+    // ----- Init -----
+    loadRecentSearches();
+    if (quantityDropdown) {
+      quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+      quantityDropdown.disabled = true;
+    }
+  });
+})();
+
+// NOTE: currentNDC is scoped inside the IIFE; this log outside won't work as-is.
+// console.log("currentNDC:", currentNDC);
+</script>
