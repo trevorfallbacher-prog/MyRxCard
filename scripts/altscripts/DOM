@@ -34,9 +34,14 @@
   let userZip = null, userCity = null, userState = null, userRadius = null;
   let currentNDC = '';            // cleaned NDC (no dashes)
   let currentQuantity = null;     // exact quantity used for the last search
+  let currentSKU = null;          // { name, strength, uom, form, ndcs:[], packSize }
 
-  // Simple in-memory cache for DrugData lookups
+  // Simple in-memory cache for Phoenix CacheDrugData queries (keyed by name)
   const drugsCache = new Map();
+
+  // Xano override cache: Map<`${ndc11}|${qty}`, xanoRow>. Loaded once, lazily.
+  let xanoByKey = null;
+  let xanoLoadPromise = null;
 
   // ---------- Loader (ref-counted to avoid early hide) ----------
   let _loaderCount = 0;
@@ -147,21 +152,22 @@
       .trim();
   }
 
-  // ---------- Local text filter for drugs ----------
-  function filterDrugsLocal(list = [], query = '') {
-    const q = String(query || '').trim().toLowerCase();
-    const base = (list || []).filter(isActiveRow); // ✅ only Active
-    if (!q) return base;
-    const tokens = q.split(/\s+/).filter(Boolean);
-    return base.filter(row => {
-      const hay = [
-        row.MedDrugName,
-        row.GenericName,
-        row.BrandName,
-        row.NDC || row.Ndc || row.ndc
-      ].map(v => String(v || '').toLowerCase()).join(' | ');
-      return tokens.every(tok => hay.includes(tok));
-    });
+  // ---------- SKU key (collapse Phoenix rows to one suggestion per SKU) ----------
+  function skuKey(row) {
+    const name = String(row?.MedDrugName || '').trim().toLowerCase();
+    const strength = String(row?.MedStrength ?? '').trim().toLowerCase();
+    const uom = String(row?.Uom ?? '').trim().toLowerCase();
+    const form = String(row?.DosageForm ?? '').trim().toLowerCase();
+    return `${name}||${strength}||${uom}||${form}`;
+  }
+  function skuLabel(row) {
+    const name = String(row?.MedDrugName || '').trim();
+    const strength = String(row?.MedStrength ?? '').trim();
+    const uom = String(row?.Uom ?? '').trim();
+    const form = String(row?.DosageForm ?? '').trim();
+    const strengthPart = strength ? `${strength}${uom ? ' ' + uom : ''}` : '';
+    const tail = [strengthPart, form].filter(Boolean).join(' · ');
+    return tail ? `${name} — ${tail}` : name;
   }
 
   // ---------- Inject CSS for disabled dropdowns ----------
@@ -212,25 +218,70 @@
     if (!userRadius) userRadius = '10';
   }
 
-  // ---------- API: Xano (formulary) ----------
-  async function fetchDrugs(query = '') {
-    const key = (query ? String(query).toLowerCase() : '__ALL__');
+  // ---------- API: Phoenix PBM (full formulary drug search — feeds typeahead) ----------
+  async function fetchPhoenixDrugs(query = '') {
+    const q = String(query || '').trim();
+    if (!q) return [];
+    const key = q.toLowerCase();
     if (drugsCache.has(key)) return drugsCache.get(key);
     try {
-      const url = query ? `${XANO_BASE_URL}?q=${encodeURIComponent(query)}` : XANO_BASE_URL;
-      const r = await fetch(url);
+      const url = `${baseUrl}/CacheDrugData?name=${encodeURIComponent(q)}`;
+      const r = await fetch(url, { headers: PHOENIX_GET_HEADERS });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
-
-      const arrRaw = Array.isArray(data) ? data : [];
-      const arr = arrRaw.filter(isActiveRow); // ✅ cache only Active
-
+      const arr = Array.isArray(data)
+        ? data
+        : (Array.isArray(data?.Response) ? data.Response : []);
       drugsCache.set(key, arr);
       return arr;
     } catch (e) {
-      console.error('Error fetching drugs:', e);
+      console.error('Phoenix drug search failed:', e);
       return [];
     }
+  }
+
+  // ---------- API: Xano altScripts override map (special prices) ----------
+  // Loaded once, keyed by `${normalizedNdc}|${quantity}` for O(1) override
+  // lookup at selection time. Never used as the typeahead source.
+  async function loadXanoOverrides() {
+    if (xanoByKey) return xanoByKey;
+    if (xanoLoadPromise) return xanoLoadPromise;
+    xanoLoadPromise = (async () => {
+      try {
+        const r = await fetch(XANO_BASE_URL);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const rows = (Array.isArray(data) ? data : []).filter(isActiveRow);
+        const map = new Map();
+        for (const row of rows) {
+          const ndc = normalizeNDC(row.NDC ?? row.Ndc ?? row.ndc);
+          const qty = Number(row.Quantity);
+          if (!ndc || !Number.isFinite(qty)) continue;
+          map.set(`${ndc}|${qty}`, row);
+        }
+        xanoByKey = map;
+        return map;
+      } catch (e) {
+        console.error('Xano override load failed:', e);
+        xanoByKey = new Map();
+        return xanoByKey;
+      }
+    })();
+    return xanoLoadPromise;
+  }
+  // Returns the cheapest matching Xano override row for any of the given NDCs
+  // at the given quantity, or null. Requires loadXanoOverrides() to have run.
+  function findXanoOverride(ndcs = [], quantity) {
+    if (!xanoByKey || !Number.isFinite(Number(quantity))) return null;
+    const qty = Number(quantity);
+    const hits = [];
+    for (const raw of ndcs) {
+      const n = normalizeNDC(raw);
+      if (!n) continue;
+      const row = xanoByKey.get(`${n}|${qty}`);
+      if (row) hits.push(row);
+    }
+    return hits.length ? pickBestXanoRow(hits) : null;
   }
 
   // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
@@ -486,11 +537,61 @@
     }
 
     // ---------- Suggestions ----------
-    function paintSuggestions(drugs) {
+    // Common quantity options appended to the per-SKU pack size.
+    const COMMON_QUANTITIES = [30, 60, 90];
+
+    function populateQuantityDropdown(sku) {
+      if (!quantityDropdown) return;
+      const qSet = new Set(COMMON_QUANTITIES);
+      const pack = Number(sku?.packSize);
+      if (Number.isFinite(pack) && pack > 0) qSet.add(pack);
+      const quantities = [...qSet].sort((a, b) => a - b);
+      quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+      quantities.forEach(q => {
+        const o = document.createElement('option');
+        o.value = q;
+        o.textContent = q;
+        quantityDropdown.appendChild(o);
+      });
+      quantityDropdown.disabled = quantities.length === 0;
+    }
+
+    // Collapse a flat Phoenix result list into unique SKU entries.
+    // Each entry carries every NDC seen for that SKU so override lookup can
+    // match on ANY of them (Xano may only have one of several equivalents).
+    function groupBySKU(rows = []) {
+      const byKey = new Map();
+      for (const row of rows) {
+        if (!row?.MedDrugName) continue;
+        const key = skuKey(row);
+        const ndc = normalizeNDC(row.Ndc ?? row.NDC ?? row.ndc);
+        const pack = Number(row.MedPackSize);
+        const entry = byKey.get(key);
+        if (entry) {
+          if (ndc && !entry.ndcs.includes(ndc)) entry.ndcs.push(ndc);
+          if (!Number.isFinite(entry.packSize) && Number.isFinite(pack)) entry.packSize = pack;
+        } else {
+          byKey.set(key, {
+            name: row.MedDrugName,
+            strength: row.MedStrength ?? '',
+            uom: row.Uom ?? '',
+            form: row.DosageForm ?? '',
+            ndcs: ndc ? [ndc] : [],
+            packSize: Number.isFinite(pack) ? pack : null,
+            label: skuLabel(row)
+          });
+        }
+      }
+      return [...byKey.values()].sort((a, b) =>
+        a.label.localeCompare(b.label, 'en', { sensitivity: 'base' })
+      );
+    }
+
+    function paintSuggestions(skus) {
       if (!suggestionsDiv) return;
       suggestionsDiv.innerHTML = '';
 
-      if (!drugs || drugs.length === 0) {
+      if (!skus || skus.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'drug-option';
         empty.style.opacity = '0.7';
@@ -499,41 +600,15 @@
         return;
       }
 
-      const sorted = [...drugs].sort((a, b) =>
-        String(a.MedDrugName || '').localeCompare(String(b.MedDrugName || ''), 'en', { sensitivity: 'base' })
-      );
-
-      const unique = new Set();
-      sorted.forEach(drug => {
-        if (unique.has(drug.MedDrugName)) return;
-        unique.add(drug.MedDrugName);
-
+      skus.forEach(sku => {
         const opt = document.createElement('div');
         opt.className = 'drug-option';
-        opt.textContent = drug.MedDrugName;
+        opt.textContent = sku.label;
 
         opt.addEventListener('click', () => {
-          if (inputField) inputField.value = drug.MedDrugName;
-
-          const matches = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
-          const qSet = new Set();
-          matches.forEach(row => {
-            const q = Number(row.Quantity);
-            if (Number.isFinite(q) && q > 0) qSet.add(q);
-          });
-          const quantities = [...qSet].sort((a, b) => a - b);
-
-          if (quantityDropdown) {
-            quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
-            quantities.forEach(q => {
-              const o = document.createElement('option');
-              o.value = q;
-              o.textContent = q;
-              quantityDropdown.appendChild(o);
-            });
-            quantityDropdown.disabled = quantities.length === 0;
-          }
-
+          currentSKU = sku;
+          if (inputField) inputField.value = sku.label;
+          populateQuantityDropdown(sku);
           suggestionsDiv.innerHTML = '';
           if (errEl) errEl.textContent = '';
         });
@@ -542,28 +617,30 @@
       });
     }
 
-    // ----- Show full list on focus -----
-    if (inputField) {
-      inputField.addEventListener('focus', debounce(async () => {
-        let all = drugsCache.get('__ALL__');
-        if (!all) all = await fetchDrugs('');
-        drugData = all;
-        const q = (inputField.value || '').trim();
-        const toShow = q ? filterDrugsLocal(all, q) : all;
-        paintSuggestions(toShow);
-      }, 50));
-    }
-
-    // ----- Typeahead: local filter first -----
+    // ----- Typeahead: server-side query against Phoenix CacheDrugData -----
+    // Phoenix doesn't support "list everything" so we don't paint on focus
+    // with an empty input — we wait until the user types at least 2 chars.
+    const MIN_QUERY_LEN = 2;
     const triggerInputFieldChange = async (event) => {
       const query = (event.target.value || '').trim();
-      let all = drugsCache.get('__ALL__');
-      if (!all) all = await fetchDrugs('');
-      const filtered = filterDrugsLocal(all, query);
-      drugData = filtered;
-      paintSuggestions(filtered);
+      // Invalidate a stale SKU pick the moment the user edits past its label,
+      // so a quantity change can't silently search the old drug.
+      if (currentSKU && query !== currentSKU.label) {
+        currentSKU = null;
+        if (quantityDropdown) {
+          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+          quantityDropdown.disabled = true;
+        }
+      }
+      if (query.length < MIN_QUERY_LEN) {
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+        return;
+      }
+      const rows = await fetchPhoenixDrugs(query);
+      drugData = rows;
+      paintSuggestions(groupBySKU(rows));
     };
-    const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 120);
+    const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 180);
     if (inputField) inputField.addEventListener('input', debouncedTriggerInputFieldChange);
 
     // ----- Run search only when a quantity is selected -----
@@ -579,37 +656,39 @@
     }
 
     // ----- Recents quick fetch (no auto-search) -----
+    // Rehydrates the stored SKU by re-querying Phoenix by drug name and
+    // picking the SKU group whose key matches what the user previously chose.
+    // Falls back to the first group if the stored SKU no longer exists.
     const recentSearchesDataFetch = async (query, details = {}) => {
       try {
-        const drugs = await fetchDrugs(query); // already filtered to Active
+        const rows = await fetchPhoenixDrugs(query);
         if (suggestionsDiv) suggestionsDiv.innerHTML = '';
-        drugData = drugs;
+        drugData = rows;
 
-        const qSet = new Set();
-        drugs.forEach(row => {
-          if (row.MedDrugName?.toLowerCase() === query.toLowerCase()) {
-            const q = Number(row.Quantity);
-            if (Number.isFinite(q) && q > 0) qSet.add(q);
-          }
-        });
-        const quantities = [...qSet].sort((a,b)=>a-b);
+        const groups = groupBySKU(rows);
+        const savedKey = details?.sku?.key;
+        const saved = savedKey
+          ? groups.find(g => skuKey({
+              MedDrugName: g.name,
+              MedStrength: g.strength,
+              Uom: g.uom,
+              DosageForm: g.form
+            }) === savedKey)
+          : null;
+        const chosen = saved || groups[0] || null;
+        currentSKU = chosen;
 
-        if (quantityDropdown) {
-          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
-          quantities.forEach(q => {
-            const o = document.createElement('option');
-            o.value = q; o.textContent = q;
-            quantityDropdown.appendChild(o);
-          });
-          quantityDropdown.disabled = quantities.length === 0;
-
+        if (chosen) {
+          populateQuantityDropdown(chosen);
+          if (inputField) inputField.value = chosen.label;
           const preferred = Number(details.quantity);
-          if (Number.isFinite(preferred) && quantities.includes(preferred)) {
-            quantityDropdown.value = String(preferred);
+          if (Number.isFinite(preferred) && quantityDropdown) {
+            const hasOption = [...quantityDropdown.options].some(o => Number(o.value) === preferred);
+            if (hasOption) quantityDropdown.value = String(preferred);
           }
+        } else if (inputField) {
+          inputField.value = query;
         }
-
-        if (inputField) inputField.value = query;
       } catch (e) {
         console.error('Error in recentSearchesDataFetch:', e);
         if (errEl) errEl.textContent = 'Failed to fetch drug data.';
@@ -644,7 +723,10 @@
     }
 
     // ----- Main search (owns loader lifecycle) -----
-    async function handleDrugSearch(drugName, quantity = 30) {
+    // Drives off the user's picked SKU (name + strength + form) from the
+    // typeahead. The SKU carries every NDC Phoenix returned for that shape,
+    // and we let Xano override on ANY matching NDC at the chosen quantity.
+    async function handleDrugSearch(_drugName, quantity = 30) {
       if (_loaderCount === 0) showLoader();
       await paintNextFrame();
       const t0 = performance.now();
@@ -652,51 +734,42 @@
       const pharmacyListDiv = document.getElementById('pinnedPharmacyList');
       try {
         quantity = parseInt(quantity, 10);
-        if (!drugName || !Number.isFinite(quantity) || quantity <= 0) {
-          if (errEl) errEl.textContent = 'Invalid search parameters.';
+        if (!currentSKU || !currentSKU.ndcs?.length ||
+            !Number.isFinite(quantity) || quantity <= 0) {
+          if (errEl) errEl.textContent = 'Pick a drug from the suggestions, then a quantity.';
           setResultsVisible(false);
           return;
         }
 
         currentQuantity = quantity;
 
-        // Gather ALL active Xano rows matching name+qty, then pick the cheapest
-        // priced one (falls back to first row if none have prices, so its NDC
-        // is still usable for the tier-2 Phoenix AS001 lookup).
-        const matchingRows = (drugData || []).filter(d =>
-          d?.MedDrugName === drugName &&
-          Number(d?.Quantity) === quantity &&
-          isActiveRow(d)
-        );
-        const selectedDrug = pickBestXanoRow(matchingRows);
-
-        if (!selectedDrug) {
-          if (errEl) errEl.textContent = 'This drug is not currently active in the formulary.';
-          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
-          setResultsVisible(false);
-          return;
-        }
+        // Make sure the Xano override map is loaded before tier 1 check.
+        await loadXanoOverrides();
 
         if (errEl) errEl.textContent = '';
 
-        const ndcRaw = selectedDrug.NDC ?? selectedDrug.Ndc ?? selectedDrug.ndc ?? '';
-        const ndcClean = normalizeNDC(ndcRaw);
-        currentNDC = ndcClean;
-
         // ---------- 3-tier top-card price resolution ----------
-        // Tier 1: Xano special price (preferred).
-        // Tier 2: Phoenix AS001 cheapest [0] using the Xano NDC.
+        // Tier 1: Xano special price on ANY NDC in this SKU at this quantity.
+        // Tier 2: Phoenix AS001 cheapest [0] using the SKU's first NDC.
         // Tier 3: no top card — fall through to competitor list only.
         let payText = 'N/A';
         let priceSource = null;
-        const xanoPrice = parseXanoPrice(selectedDrug);
-        if (Number.isFinite(xanoPrice)) {
-          payText = `$${xanoPrice.toFixed(2)}`;
-          priceSource = 'xano';
-        } else if (ndcClean) {
+        let priceNdc = currentSKU.ndcs[0];
+
+        const xanoHit = findXanoOverride(currentSKU.ndcs, quantity);
+        if (xanoHit) {
+          const xanoPrice = parseXanoPrice(xanoHit);
+          if (Number.isFinite(xanoPrice)) {
+            payText = `$${xanoPrice.toFixed(2)}`;
+            priceSource = 'xano';
+            priceNdc = normalizeNDC(xanoHit.NDC ?? xanoHit.Ndc ?? xanoHit.ndc) || priceNdc;
+          }
+        }
+
+        if (!priceSource && priceNdc) {
           try {
             const asRows = await fetchPhoenixPrices({
-              ndc: ndcClean,
+              ndc: priceNdc,
               quantity,
               zip: userZip,
               radius: userRadius,
@@ -716,15 +789,16 @@
         }
 
         const hasTopPrice = priceSource !== null;
+        currentNDC = priceNdc;
 
         if (pharmacyListDiv) {
           pharmacyListDiv.innerHTML = hasTopPrice ? `
             <div class="pharmacy-card"
                  data-pharmacy-name="altScripts"
                  data-price="${payText.replace(/^\$/, '')}"
-                 data-drug-name="${selectedDrug.MedDrugName}"
+                 data-drug-name="${currentSKU.label}"
                  data-quantity="${quantity}"
-                 data-ndc="${ndcClean}"
+                 data-ndc="${priceNdc}"
                  data-price-source="${priceSource}">
               <h1 class="price">${payText}</h1>
               <h4>altScripts</h4>
@@ -744,7 +818,7 @@
         const spn  = document.getElementById('selected-pharmacy-name');
         const spn1 = document.getElementById('selected-pharmacy-name1');
 
-        const drugLabel = selectedDrug.MedDrugName || 'Unknown Drug';
+        const drugLabel = currentSKU.label || currentSKU.name || 'Unknown Drug';
         const topPharmName = hasTopPrice ? 'altScripts' : 'Not Available';
         if (sd0) sd0.textContent = drugLabel;
         if (sd1) sd1.textContent = drugLabel;
@@ -759,19 +833,27 @@
         await paintNextFrame();
         await paintNextFrame();
 
-        storeAndDisplayRecent5Search(drugName, {
+        storeAndDisplayRecent5Search(currentSKU.name, {
           quantity,
           price: payText,
-          overallData: {
-            MedDrugName: selectedDrug.MedDrugName,
-            Quantity: quantity,
-            PatientPay: selectedDrug.PatientPay ?? selectedDrug.Price_w_NADAC ?? null,
-            Ndc: ndcClean,
-            Active_status: selectedDrug.Active_status
+          sku: {
+            key: skuKey({
+              MedDrugName: currentSKU.name,
+              MedStrength: currentSKU.strength,
+              Uom: currentSKU.uom,
+              DosageForm: currentSKU.form
+            }),
+            name: currentSKU.name,
+            strength: currentSKU.strength,
+            uom: currentSKU.uom,
+            form: currentSKU.form,
+            ndcs: currentSKU.ndcs,
+            packSize: currentSKU.packSize,
+            label: currentSKU.label
           }
         });
 
-        await fetchAndRenderCompetitors({ ndc: ndcClean, quantity });
+        await fetchAndRenderCompetitors({ ndc: priceNdc, quantity });
 
       } catch (e) {
         console.error('handleDrugSearch error:', e);
@@ -823,6 +905,8 @@
       quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
       quantityDropdown.disabled = true;
     }
+    // Warm the Xano override map so tier-1 lookup is instant at selection time.
+    loadXanoOverrides();
   });
 })();
 
