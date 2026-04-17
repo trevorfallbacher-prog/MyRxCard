@@ -382,6 +382,49 @@
     if (quantityDropdown) quantityDropdown.disabled = true;
     injectDisabledDropdownStyles();
 
+    // ----- Floating labels (mirrors main.js behavior) -----
+    // The .form-group label uses `.label-float` to slide up above the input.
+    // Works regardless of whether the label is authored before or after the
+    // input inside its .form-group.
+    function updateFloatLabel(field) {
+      const label = field?.parentElement?.querySelector('label');
+      if (!label) return;
+      const hasValue = field.value && String(field.value).trim() !== '';
+      const hasFocus = document.activeElement === field;
+      if (hasValue || hasFocus) label.classList.add('label-float');
+      else label.classList.remove('label-float');
+    }
+    function updateAllFloatLabels() {
+      [inputField, quantityDropdown].forEach(f => { if (f) updateFloatLabel(f); });
+    }
+    [inputField, quantityDropdown].forEach(field => {
+      if (!field) return;
+      field.addEventListener('focus',  () => updateFloatLabel(field));
+      field.addEventListener('blur',   () => updateFloatLabel(field));
+      field.addEventListener('input',  () => updateFloatLabel(field));
+      field.addEventListener('change', () => updateFloatLabel(field));
+      // Strip and guard the placeholder so it can't conflict with the label.
+      if (field.tagName === 'INPUT') {
+        field.removeAttribute('placeholder');
+        new MutationObserver(() => {
+          if (field.hasAttribute('placeholder')) field.removeAttribute('placeholder');
+        }).observe(field, { attributes: true, attributeFilter: ['placeholder'] });
+      }
+      // Keep labels in sync when code sets `.value` directly (suggestion
+      // clicks, recent-search rehydration, etc.) — the native setter wouldn't
+      // fire any event otherwise.
+      const proto = Object.getPrototypeOf(field);
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (descriptor && descriptor.set) {
+        Object.defineProperty(field, 'value', {
+          get() { return descriptor.get.call(this); },
+          set(v) { descriptor.set.call(this, v); updateFloatLabel(this); },
+          configurable: true,
+        });
+      }
+      updateFloatLabel(field);
+    });
+
     // ----- Location bootstrapping -----
     function displayLocation(zip, city, state, radius) {
       const zipEl = document.getElementById('location-zip');
@@ -643,15 +686,21 @@
     const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 180);
     if (inputField) inputField.addEventListener('input', debouncedTriggerInputFieldChange);
 
-    // ----- Run search only when a quantity is selected -----
+    // ----- Run search when quantity changes OR the Search button fires -----
+    const runSearchFromForm = async () => {
+      const drugName = (inputField?.value || '').trim();
+      const qty = parseInt(quantityDropdown?.value, 10);
+      if (!drugName || !Number.isFinite(qty) || qty <= 0) return;
+      currentQuantity = qty;
+      await handleDrugSearch(drugName, qty);
+    };
     if (quantityDropdown) {
-      quantityDropdown.addEventListener('change', async () => {
-        const drugName = (inputField?.value || '').trim();
-        const qty = parseInt(quantityDropdown.value, 10);
-        if (drugName && Number.isFinite(qty) && qty > 0) {
-          currentQuantity = qty;
-          await handleDrugSearch(drugName, qty);
-        }
+      quantityDropdown.addEventListener('change', runSearchFromForm);
+    }
+    if (searchBtn) {
+      searchBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        runSearchFromForm();
       });
     }
 
