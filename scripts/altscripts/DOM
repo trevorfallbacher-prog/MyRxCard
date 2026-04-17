@@ -589,7 +589,7 @@
       const pack = Number(sku?.packSize);
       if (Number.isFinite(pack) && pack > 0) qSet.add(pack);
       const quantities = [...qSet].sort((a, b) => a - b);
-      quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+      quantityDropdown.innerHTML = '<option value=""></option>';
       quantities.forEach(q => {
         const o = document.createElement('option');
         o.value = q;
@@ -671,7 +671,7 @@
       if (currentSKU && query !== currentSKU.label) {
         currentSKU = null;
         if (quantityDropdown) {
-          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+          quantityDropdown.innerHTML = '<option value=""></option>';
           quantityDropdown.disabled = true;
         }
       }
@@ -967,7 +967,7 @@
     // ----- Init -----
     loadRecentSearches();
     if (quantityDropdown) {
-      quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+      quantityDropdown.innerHTML = '<option value=""></option>';
       quantityDropdown.disabled = true;
     }
     // Warm the Xano override map so tier-1 lookup is instant at selection time.
