@@ -74,6 +74,18 @@
       color: #b0b4bc !important;
     }
 
+    /* Disabled fields force-reset the floating label to its centered state.
+       The field can't be edited, so a floated label just advertises a white
+       notch over a grey field. */
+    .form-group:has(input:disabled) label,
+    .form-group:has(select:disabled) label {
+      top: 28px !important;
+      font-size: 15px !important;
+      font-weight: 400 !important;
+      background: transparent !important;
+      letter-spacing: normal !important;
+    }
+
     #searchButton:disabled {
       background: #c8ccd1 !important;
       color: #f0f2f5 !important;
