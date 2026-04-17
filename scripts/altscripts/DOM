@@ -953,6 +953,17 @@
     const quantityDropdownEl = document.getElementById('quantityDropdown');
     if (quantityDropdownEl) quantityDropdownEl.addEventListener('change', clearErr);
 
+    // ----- Close the suggestions dropdown on outside click -----
+    // Mirrors main.js:600-605. A click that lands outside both the input and
+    // the suggestions container clears the list; a click inside either stays
+    // open so the user can still pick a row.
+    document.addEventListener('click', (e) => {
+      if (!suggestionsDiv) return;
+      if (inputField?.contains(e.target)) return;
+      if (suggestionsDiv.contains(e.target)) return;
+      suggestionsDiv.innerHTML = '';
+    });
+
     // ----- Init -----
     loadRecentSearches();
     if (quantityDropdown) {
