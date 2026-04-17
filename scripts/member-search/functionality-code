@@ -1,7 +1,28 @@
-<script>
+// scripts/member-search/functionality-code
+//
+// Loaded from GitHub via <script src="...">. Webflow {{wf}} CMS placeholders
+// do NOT resolve here — Webflow's render pipeline only substitutes them
+// inside inline page markup. The Webflow page template must expose its CMS
+// fields to this script via a small inline shim that runs BEFORE this file
+// loads:
+//
+//   <!-- Paste into the Webflow page template, above the <script src> tags -->
+//   <script>
+//     window._rxConfig = {
+//       type:          "{{wf {&quot;path&quot;:&quot;type&quot;,&quot;type&quot;:&quot;Option&quot;\} }}",
+//       groupNum:      "{{wf {&quot;path&quot;:&quot;partner:groupnum&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}".trim() || null,
+//       brandCsv:      "{{wf {&quot;path&quot;:&quot;partner:pharmacy-name-for-rxlogic&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}",
+//       hideAllChains: "{{wf {&quot;path&quot;:&quot;partner:all-chains-hide&quot;,&quot;type&quot;:&quot;Bool&quot;\} }}" === "true",
+//       partnerName:   "{{wf {&quot;path&quot;:&quot;partner:name&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}",
+//       formspreeUrl:  "{{wf {&quot;path&quot;:&quot;partner:formspree-endpoint-url&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}"
+//     };
+//   </script>
+//   <script src="https://cdn.jsdelivr.net/gh/.../functionality-code"></script>
+//   <script src="https://cdn.jsdelivr.net/gh/.../group-code"></script>
+//   <script src="https://cdn.jsdelivr.net/gh/.../pharmacy-code"></script>
+
 (function () {
-  var TYPE_RAW = "{{wf {&quot;path&quot;:&quot;type&quot;,&quot;type&quot;:&quot;Option&quot;\} }}";
-  TYPE_RAW = (TYPE_RAW || '').replace(/&quot;/g, '"').trim();
+  var TYPE_RAW = String((window._rxConfig && window._rxConfig.type) || '').trim();
 
   window._rxState = (function () {
     const apiKey  = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
@@ -379,4 +400,3 @@
     };
   })();
 })();
-</script>

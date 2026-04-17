@@ -1,4 +1,6 @@
-<script>
+// scripts/member-search/group-code
+// No CMS-backed values in this block; runs only when pageType === 'group'.
+
 (function(){
   const s = window._rxState;
   if (!s || s.pageType !== 'group') return;
@@ -507,4 +509,3 @@
     initializeDropdowns();
   });
 })();
-</script>

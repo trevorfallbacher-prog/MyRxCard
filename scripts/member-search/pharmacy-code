@@ -1,7 +1,12 @@
-<script>
+// scripts/member-search/pharmacy-code
+// Partner-config values (groupNum, brandCsv, hideAllChains, partnerName,
+// formspreeUrl) are read from window._rxConfig. See functionality-code for
+// the Webflow shim snippet that hydrates that object from CMS fields.
+
 (function(){
   const s = window._rxState;
   if (!s || s.pageType !== 'pharmacy') return;
+  const cfg = window._rxConfig || {};
 
   document.addEventListener('DOMContentLoaded', () => {
     s.injectDisabledDropdownStyles();
@@ -19,8 +24,7 @@
     if (dosageDropdown) dosageDropdown.disabled  = true;
     if (formDropdown)   formDropdown.disabled    = true;
 
-    const CMS_GROUP_NUM_RAW = "{{wf {&quot;path&quot;:&quot;partner:groupnum&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}";
-    const cmsGroupNum = CMS_GROUP_NUM_RAW.trim() || null;
+    const cmsGroupNum = (typeof cfg.groupNum === 'string' ? cfg.groupNum.trim() : cfg.groupNum) || null;
 
     function displayLocation(zip, city, state, radius) {
       const zipEl   = document.getElementById('location-zip');
@@ -324,18 +328,18 @@
           return;
         } else if (errEl) errEl.textContent = '';
 
-        const brandCsv     = "{{wf {&quot;path&quot;:&quot;partner:pharmacy-name-for-rxlogic&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}";
-        const allchainsHide = "{{wf {&quot;path&quot;:&quot;partner:all-chains-hide&quot;,&quot;type&quot;:&quot;Bool&quot;\} }}";
+        const brandCsv      = String(cfg.brandCsv || '');
+        const allchainsHide = cfg.hideAllChains === true || cfg.hideAllChains === 'true';
 
         const withPrice = allPharmacies
           .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
-          .filter(p => allchainsHide === 'true' ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
+          .filter(p => allchainsHide ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
 
         let pinned;
         if (cmsGroupNum && groupPharmacies) {
           const groupWithPrice = groupPharmacies
             .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
-            .filter(p => allchainsHide === 'true' ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
+            .filter(p => allchainsHide ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
           pinned = s.removeOutliersUsingSD(groupWithPrice).sort((a,b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay));
         } else {
           const namePinned = withPrice.filter(p => s.isBrandMatch(p, brandCsv));
@@ -375,7 +379,8 @@
                 ${compareMsg ? `<p class="comparative-pricing">${compareMsg}</p>` : ''}
               </div>`;
           } else {
-            pharmacyListDiv.innerHTML = `<div class="pharmacy-card"><p>No {{wf {&quot;path&quot;:&quot;partner:name&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }} pharmacies in your area.</p></div>`;
+            const partnerName = String(cfg.partnerName || '').trim();
+            pharmacyListDiv.innerHTML = `<div class="pharmacy-card"><p>No ${partnerName ? partnerName + ' ' : ''}pharmacies in your area.</p></div>`;
           }
         }
 
@@ -563,8 +568,13 @@
             ...(reason==='better-price' && competitorPrice ? { competitorPrice } : {}),
           }).filter(([,v]) => v != null && v !== '')
         );
+        const formspreeUrl = String(cfg.formspreeUrl || '').trim();
+        if (!formspreeUrl) {
+          if (pdError) pdError.textContent = 'Submission endpoint is not configured.';
+          return;
+        }
         try {
-          const res = await fetch('{{wf {&quot;path&quot;:&quot;partner:formspree-endpoint-url&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}', {
+          const res = await fetch(formspreeUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             body: JSON.stringify(submissionPayload)
@@ -598,4 +608,3 @@
     initializeDropdowns();
   });
 })();
-</script>
