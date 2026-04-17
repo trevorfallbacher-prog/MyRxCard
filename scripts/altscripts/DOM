@@ -870,6 +870,11 @@
       const card = document.querySelector('.pharmacy-card');
       if (!card) return;
       card.classList.add('selected');
+      // Match main.js stagger: let the browser paint the hidden card, then
+      // flip .card-visible so the scale-in transition actually runs.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => card.classList.add('card-visible'));
+      });
       card.addEventListener('click', (e) => {
         const sel  = e.currentTarget;
         const data = sel.dataset;

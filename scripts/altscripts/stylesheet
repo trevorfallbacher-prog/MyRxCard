@@ -496,9 +496,12 @@
       to { transform: scale(4.5); opacity: 0; }
     }
 
-    /* NOTE: main.js staggers card entrance via a .card-visible class. altscripts
-       doesn't add that class, so we keep cards visible by default. The
-       .card-visible rule stays for compatibility if it ever does get wired. */
+    /* Staggered card entrance — JS adds .card-visible after render. */
+    .pharmacy-card {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+
     .pharmacy-card.card-visible {
       opacity: 1;
       transform: scale(1);
