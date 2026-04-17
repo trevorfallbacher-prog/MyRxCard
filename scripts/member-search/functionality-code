@@ -1,0 +1,382 @@
+<script>
+(function () {
+  var TYPE_RAW = "{{wf {&quot;path&quot;:&quot;type&quot;,&quot;type&quot;:&quot;Option&quot;\} }}";
+  TYPE_RAW = (TYPE_RAW || '').replace(/&quot;/g, '"').trim();
+
+  window._rxState = (function () {
+    const apiKey  = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
+    const baseUrl = 'https://phoenixapi.rxlogic.com';
+    const drugsCache = new Map();
+
+    let drugData      = [];
+    let currentNDC    = '';
+    let recentSearches = [];
+    let userZip = null, userCity = null, userState = null, userRadius = null;
+    let selectedDrug  = null;
+    let ipDetectedZip = null, ipDetectedCity = null, ipDetectedState = null, ipDetectedSource = null;
+
+    // Store TYPE_RAW so blocks 2/3 can read it
+    const pageType = TYPE_RAW.toLowerCase();
+
+    // ---------- Loader ----------
+    let _loaderCount = 0;
+    function _ensureLoaderEl() {
+      let el = document.getElementById('dynamic-loader');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'dynamic-loader';
+        el.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:99999;background:rgba(0,0,0,.7)';
+        el.innerHTML = `
+          <div class="pill-container">
+            <div class="capsule"><div class="half half-left"></div><div class="half half-right"></div></div>
+            <div class="sparkles"><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span><span class="sparkle"></span></div>
+            <h3 class="loading-message">Loading...</h3>
+          </div>`;
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function showLoader() { _loaderCount++; _ensureLoaderEl().style.display = 'flex'; }
+  async function hideLoader() {
+  console.log('hideLoader called, count before:', _loaderCount);
+  _loaderCount = Math.max(0, _loaderCount - 1);
+  console.log('hideLoader count after:', _loaderCount);
+  if (_loaderCount === 0) {
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const el = document.getElementById('dynamic-loader');
+    console.log('removing loader el:', el);
+    if (el) el.remove();
+  }
+}
+    const paintNextFrame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // ---------- Utils ----------
+    function debounce(fn, delay) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); }; }
+    function formatNumberWithCommas(num) {
+      const n = parseFloat(num);
+      if (Number.isNaN(n)) return '0.00';
+      return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+    function trimLastWordIfEndsWithNumber(str) {
+      const s = String(str || '');
+      const m = s.match(/(#?\d+)$/);
+      return m ? s.replace(m[0], '').trim() : s.trim();
+    }
+    function toTitleCaseWithSpecialRule(str) {
+      return String(str || '').split(' ').map(w => w.length > 1 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w.toUpperCase()).join(' ');
+    }
+    function removeOutliersUsingSD(data, multiplier = 2) {
+      const prices = data.map(p => parseFloat(p?.Pricing?.PatientPay)).filter(n => Number.isFinite(n));
+      if (prices.length < 2) return data;
+      const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const variance = prices.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / prices.length;
+      const sd = Math.sqrt(variance);
+      return data.filter(p => {
+        const v = parseFloat(p?.Pricing?.PatientPay);
+        return Number.isFinite(v) && v >= mean - multiplier * sd && v <= mean + multiplier * sd;
+      });
+    }
+    function isBrandMatch(pharmacy, brandCsv) {
+      const name = (pharmacy?.Pharmacy?.Name || '').toUpperCase();
+      if (!name || !brandCsv?.trim()) return false;
+      return brandCsv.split(',').map(s => s.trim().toUpperCase()).filter(Boolean).some(token => name.includes(token));
+    }
+    function injectDisabledDropdownStyles() {
+      let styleEl = document.getElementById('disabled-dropdown-styles');
+      if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = 'disabled-dropdown-styles';
+        styleEl.textContent = `select:disabled { background-color: #e6e6e6; color: #666; opacity: 0.6; cursor: not-allowed; }`;
+        document.head.appendChild(styleEl);
+      }
+    }
+
+    // ---------- Location storage ----------
+    function saveLocationToLocalStorage(zip, city, state, radius, manual = false) {
+      localStorage.setItem('userZip', zip);
+      localStorage.setItem('userCity', city);
+      localStorage.setItem('userState', state);
+      localStorage.setItem('userRadius', radius);
+      if (manual) localStorage.setItem('userZipTimestamp', Date.now().toString());
+      else localStorage.removeItem('userZipTimestamp');
+    }
+    function loadLocationFromLocalStorage() {
+      const ts = localStorage.getItem('userZipTimestamp');
+      const expired = ts && (Date.now() - parseInt(ts, 10) > 24 * 60 * 60 * 1000);
+      if (expired) {
+        ['userZip','userCity','userState','userRadius','userZipTimestamp'].forEach(k => localStorage.removeItem(k));
+        return { zip: null, city: null, state: null, radius: null };
+      }
+      return {
+        zip:    localStorage.getItem('userZip'),
+        city:   localStorage.getItem('userCity'),
+        state:  localStorage.getItem('userState'),
+        radius: localStorage.getItem('userRadius')
+      };
+    }
+    function ensureLocationDefaults() {
+      if (!userZip)    userZip    = '00000';
+      if (!userCity)   userCity   = 'Default City';
+      if (!userState)  userState  = 'Default State';
+      if (!userRadius) userRadius = '10';
+    }
+
+    // ---------- Location detection ----------
+    async function reverseGeocodeToZip(lat, lng) {
+      try {
+        const url = `https://geocoding.geo.census.gov/geocoder/geographies/coordinates?x=${lng}&y=${lat}&benchmark=Public_AR_Current&vintage=Current_Current&layers=2010+Census+ZIP+Code+Tabulation+Areas&format=json`;
+        const data = await (await fetch(url)).json();
+        const zip = data?.result?.geographies?.['2010 Census ZIP Code Tabulation Areas']?.[0]?.ZCTA5;
+        if (zip) return zip;
+      } catch (e) {}
+      try {
+        const nom = await (await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
+          { headers: { 'Accept-Language': 'en' } }
+        )).json();
+        const zip = nom?.address?.postcode?.substring(0, 5);
+        if (zip) return zip;
+      } catch (e) {}
+      return null;
+    }
+
+    async function detectByBrowser() {
+      return new Promise((resolve) => {
+        if (!navigator.geolocation) { resolve(null); return; }
+        const hardTimeout = setTimeout(() => resolve(null), 10000);
+        navigator.geolocation.getCurrentPosition(
+          async (pos) => {
+            try {
+              const { latitude, longitude } = pos.coords;
+              const zip = await Promise.race([
+                reverseGeocodeToZip(latitude, longitude),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('geocode timeout')), 5000))
+              ]);
+              clearTimeout(hardTimeout);
+              if (!zip) { resolve(null); return; }
+              const zData = await Promise.race([
+                fetch(`https://api.zippopotam.us/us/${zip}`).then(r => r.json()),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('zip timeout')), 4000))
+              ]);
+              resolve({
+                zip,
+                city:   zData?.places?.[0]?.['place name']         || '',
+                state:  zData?.places?.[0]?.['state abbreviation'] || '',
+                source: 'gps'
+              });
+            } catch { clearTimeout(hardTimeout); resolve(null); }
+          },
+          () => { clearTimeout(hardTimeout); resolve(null); },
+          { timeout: 6000, maximumAge: 300000, enableHighAccuracy: true }
+        );
+      });
+    }
+
+    async function detectByIp() {
+      try {
+        const loc = await (await fetch('https://ipapi.co/json/')).json();
+        return {
+          zip:    loc.postal      || '00000',
+          city:   loc.city        || 'Default City',
+          state:  loc.region_code || loc.region || 'Default State',
+          source: 'ip'
+        };
+      } catch (e) {
+        return { zip: '00000', city: 'Default City', state: 'Default State', source: 'fallback' };
+      }
+    }
+
+    // ---------- API ----------
+    async function fetchDrugs(query) {
+      if (!query) return [];
+      const key = String(query).toLowerCase();
+      if (drugsCache.has(key)) return drugsCache.get(key);
+      try {
+        const r = await fetch(`${baseUrl}/CacheDrugData?name=${encodeURIComponent(query)}`, { headers: { apiKey } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const arr = Array.isArray(data) ? data : [];
+        drugsCache.set(key, arr);
+        return arr;
+      } catch (e) { console.error('Error fetching drugs:', e); return []; }
+    }
+
+    async function fetchPharmacies(payload) {
+      try {
+        const r = await fetch(`${baseUrl}/PharmacyRadiusPricing`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apiKey },
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) {
+          const t = await r.text();
+          console.error('Server Error:', t);
+          const errEl = document.getElementById('errorMessage');
+          if (errEl) errEl.textContent = 'Server error occurred: ' + t;
+          return [];
+        }
+        const data = await r.json();
+        return data.Response || [];
+      } catch (e) {
+        console.error('Error fetching pharmacies:', e);
+        const errEl = document.getElementById('errorMessage');
+        if (errEl) errEl.textContent = 'Failed to fetch pharmacies.';
+        return [];
+      }
+    }
+
+    // ---------- Dropdown helpers ----------
+    function renderDropdown(dropdown, items, selectedValue = null) {
+      if (!dropdown) return;
+      dropdown.innerHTML = '';
+      if (!items || items.length === 0) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = dropdown.id === 'dosageDropdown' ? 'Select dosage' : 'Select form';
+        dropdown.appendChild(o);
+        dropdown.disabled = true;
+        return;
+      }
+      items.forEach(item => {
+        const o = document.createElement('option');
+        o.value = item; o.textContent = item || 'N/A';
+        dropdown.appendChild(o);
+      });
+      if (selectedValue && items.includes(selectedValue)) dropdown.value = selectedValue;
+      else if (items.length) dropdown.value = items[0];
+      dropdown.disabled = items.length <= 1;
+    }
+
+    function filterDosagesByForm(selectedForm, update = true) {
+      const dosageDropdown = document.getElementById('dosageDropdown');
+      const available = new Set(), all = new Set();
+      drugData.forEach(d => { const ds = `${d.MedStrength} ${d.Uom}`; all.add(ds); if (d.DosageForm === selectedForm) available.add(ds); });
+      if (update) renderDropdown(dosageDropdown, [...all], [...available][0]);
+      if (available.size && dosageDropdown && !available.has(dosageDropdown.value)) dosageDropdown.value = [...available][0];
+    }
+
+    function filterFormsByDosage(selectedDosage, update = true) {
+      const formDropdown = document.getElementById('formDropdown');
+      const available = new Set(), all = new Set();
+      drugData.forEach(d => { all.add(d.DosageForm); if (`${d.MedStrength} ${d.Uom}` === selectedDosage) available.add(d.DosageForm); });
+      if (update) renderDropdown(formDropdown, [...all], [...available][0]);
+      if (available.size && formDropdown && !available.has(formDropdown.value)) formDropdown.value = [...available][0];
+    }
+
+    // ---------- Star animation (group pages) ----------
+    const starStoppers = new Map();
+
+    function animateStar(canvas) {
+      const ctx = canvas.getContext('2d');
+      const W = canvas.width, H = canvas.height, cx = W/2, cy = H/2, OR = 22, IR = 9;
+      let frame = 0, rafId;
+      function starPath(r, ir) {
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+          const angle = (i * Math.PI) / 5 - Math.PI / 2;
+          const rad = i % 2 === 0 ? r : ir;
+          i === 0 ? ctx.moveTo(cx+rad*Math.cos(angle), cy+rad*Math.sin(angle))
+                  : ctx.lineTo(cx+rad*Math.cos(angle), cy+rad*Math.sin(angle));
+        }
+        ctx.closePath();
+      }
+      function draw() {
+        ctx.clearRect(0,0,W,H);
+        const t = frame/60;
+        starPath(OR,IR);
+        const grad = ctx.createRadialGradient(cx-4,cy-6,2,cx,cy,OR);
+        grad.addColorStop(0,'#fff9d0'); grad.addColorStop(0.3,'#f5d060'); grad.addColorStop(0.7,'#c9a84c'); grad.addColorStop(1,'#8a6520');
+        ctx.fillStyle=grad; ctx.fill();
+        starPath(OR*0.55,IR*0.55);
+        const ig=ctx.createRadialGradient(cx,cy-3,0,cx,cy,OR*0.55);
+        ig.addColorStop(0,'rgba(255,255,220,0.9)'); ig.addColorStop(0.5,'rgba(255,230,120,0.4)'); ig.addColorStop(1,'rgba(255,200,60,0)');
+        ctx.fillStyle=ig; ctx.fill();
+        starPath(OR,IR); ctx.strokeStyle='#a07830'; ctx.lineWidth=1.2; ctx.stroke();
+        const ga=0.3+0.25*Math.sin(t*2.2), gs=1+0.18*Math.sin(t*2.2);
+        ctx.save(); ctx.translate(cx,cy); ctx.scale(gs,gs); ctx.translate(-cx,-cy);
+        starPath(OR+4,IR+2);
+        const gg=ctx.createRadialGradient(cx,cy,IR,cx,cy,OR+8);
+        gg.addColorStop(0,`rgba(255,220,80,${ga})`); gg.addColorStop(0.5,`rgba(201,168,76,${ga*0.6})`); gg.addColorStop(1,`rgba(180,140,60,0)`);
+        ctx.fillStyle=gg; ctx.fill(); ctx.restore();
+        const sa=0.5+0.5*Math.abs(Math.sin(t*1.8)), sl=12+6*Math.abs(Math.sin(t*1.8));
+        ctx.save(); ctx.globalAlpha=sa;
+        [[0,sl],[Math.PI/2,sl*0.6],[Math.PI/4,sl*0.4],[3*Math.PI/4,sl*0.4]].forEach(([angle,len]) => {
+          const g2=ctx.createLinearGradient(cx+Math.cos(angle)*3,cy+Math.sin(angle)*3,cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+          g2.addColorStop(0,'rgba(255,255,255,0.95)'); g2.addColorStop(0.4,'rgba(255,240,180,0.5)'); g2.addColorStop(1,'rgba(255,220,100,0)');
+          ctx.beginPath();
+          ctx.moveTo(cx+Math.cos(angle)*2,cy+Math.sin(angle)*2);
+          ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+          ctx.lineTo(cx+Math.cos(angle+Math.PI)*len,cy+Math.sin(angle+Math.PI)*len);
+          ctx.closePath(); ctx.fillStyle=g2; ctx.fill();
+        });
+        ctx.restore();
+        const sp=(t*0.4)%1, sx=cx-OR+sp*(OR*2);
+        ctx.save(); starPath(OR,IR); ctx.clip();
+        const sg=ctx.createLinearGradient(sx-14,cy-OR,sx+14,cy+OR);
+        sg.addColorStop(0,'rgba(255,255,255,0)'); sg.addColorStop(0.3,'rgba(255,255,255,0)');
+        sg.addColorStop(0.48,`rgba(255,255,255,${0.6*Math.sin(sp*Math.PI)})`);
+        sg.addColorStop(0.52,`rgba(255,255,255,${0.9*Math.sin(sp*Math.PI)})`);
+        sg.addColorStop(0.6,'rgba(255,255,255,0)'); sg.addColorStop(1,'rgba(255,255,255,0)');
+        ctx.fillStyle=sg; ctx.fillRect(0,0,W,H); ctx.restore();
+        frame++; rafId=requestAnimationFrame(draw);
+      }
+      draw();
+      return () => cancelAnimationFrame(rafId);
+    }
+
+    // ---------- Phoenix fetch timing patch ----------
+    (function(){
+      if (window.__phoenixFetchPatched) return;
+      window.__phoenixFetchPatched = true;
+      const origFetch = window.fetch;
+      window.fetch = async function(input, init) {
+        init = init || {};
+        const url = (typeof input === 'string') ? input : (input && input.url) || '';
+        const isPhoenix = url.indexOf(baseUrl) === 0;
+        const start = performance.now();
+        try {
+          const res = await origFetch(input, init);
+          const headersAt = performance.now();
+          if (isPhoenix) {
+            const ttfb = (headersAt - start).toFixed(0);
+            console.log('[APITIMING]', ttfb + 'ms');
+            const box = document.getElementById('ttfb');
+            if (box) box.textContent = ttfb + 'ms';
+          }
+          return res;
+        } catch (err) { throw err; }
+      };
+    })();
+
+    // ---------- Expose everything ----------
+    return {
+      pageType,
+      apiKey,
+      baseUrl,
+      drugsCache,
+
+      get drugData(){ return drugData; },       set drugData(v){ drugData=v; },
+      get currentNDC(){ return currentNDC; },   set currentNDC(v){ currentNDC=v; },
+      get recentSearches(){ return recentSearches; }, set recentSearches(v){ recentSearches=v; },
+      get userZip(){ return userZip; },         set userZip(v){ userZip=v; },
+      get userCity(){ return userCity; },       set userCity(v){ userCity=v; },
+      get userState(){ return userState; },     set userState(v){ userState=v; },
+      get userRadius(){ return userRadius; },   set userRadius(v){ userRadius=v; },
+      get selectedDrug(){ return selectedDrug; }, set selectedDrug(v){ selectedDrug=v; },
+      get ipDetectedZip(){ return ipDetectedZip; },       set ipDetectedZip(v){ ipDetectedZip=v; },
+      get ipDetectedCity(){ return ipDetectedCity; },     set ipDetectedCity(v){ ipDetectedCity=v; },
+      get ipDetectedState(){ return ipDetectedState; },   set ipDetectedState(v){ ipDetectedState=v; },
+      get ipDetectedSource(){ return ipDetectedSource; }, set ipDetectedSource(v){ ipDetectedSource=v; },
+
+      showLoader, hideLoader, paintNextFrame, debounce,
+      formatNumberWithCommas, trimLastWordIfEndsWithNumber, toTitleCaseWithSpecialRule,
+      removeOutliersUsingSD, isBrandMatch, injectDisabledDropdownStyles,
+      saveLocationToLocalStorage, loadLocationFromLocalStorage, ensureLocationDefaults,
+      reverseGeocodeToZip, detectByBrowser, detectByIp,
+      fetchDrugs, fetchPharmacies,
+      renderDropdown, filterDosagesByForm, filterFormsByDosage,
+      starStoppers, animateStar
+    };
+  })();
+})();
+</script>
