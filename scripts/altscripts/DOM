@@ -284,6 +284,35 @@
     return hits.length ? pickBestXanoRow(hits) : null;
   }
 
+  // ---------- GPS detection (for external location widgets) ----------
+  // Resolves to `{ zip, city, state }` or null. Uses BigDataCloud's keyless
+  // reverse-geocoder; fails soft on permission denial, timeout, or lookup
+  // errors so callers can render a clear "permission denied" state.
+  async function detectByBrowser() {
+    if (!navigator?.geolocation) return null;
+    try {
+      const coords = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          p => resolve(p.coords),
+          e => reject(e),
+          { timeout: 10000, maximumAge: 60000 }
+        );
+      });
+      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client`
+        + `?latitude=${coords.latitude}&longitude=${coords.longitude}&localityLanguage=en`;
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      const d = await r.json();
+      const zip = d?.postcode || '';
+      const city = d?.city || d?.locality || '';
+      const state = String(d?.principalSubdivisionCode || '').replace(/^US-/, '');
+      if (!zip) return null;
+      return { zip, city, state };
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
   // groupNum defaults to TPD001 (full market / competitors). Pass 'AS001' for
   // the altScripts-network-only formulary used as the tier-2 price fallback.
@@ -972,6 +1001,32 @@
     }
     // Warm the Xano override map so tier-1 lookup is instant at selection time.
     loadXanoOverrides();
+
+    // ----- External API (for location widget and other embeds) -----
+    // Surfaces the IIFE's private state under window.altScripts so embeds
+    // can read/update location and kick off a search without reaching in.
+    window.altScripts = {
+      getLocation() {
+        return { zip: userZip, city: userCity, state: userState, radius: userRadius };
+      },
+      async setLocation({ zip, city, state, radius, source } = {}) {
+        userZip = zip || userZip;
+        userCity = city || '';
+        userState = state || '';
+        userRadius = radius || userRadius || '10';
+        saveLocationToLocalStorage(userZip, userCity, userState, userRadius, source === 'manual');
+        displayLocation(userZip, userCity, userState, userRadius);
+        if (currentNDC && Number.isFinite(currentQuantity)) {
+          await fetchAndRenderCompetitors({ ndc: currentNDC, quantity: currentQuantity });
+        }
+      },
+      detectByBrowser,
+      search() {
+        if (!currentSKU || !Number.isFinite(currentQuantity)) return null;
+        return handleDrugSearch(currentSKU.label, currentQuantity);
+      }
+    };
+    document.dispatchEvent(new CustomEvent('altscripts:ready'));
   });
 })();
 
