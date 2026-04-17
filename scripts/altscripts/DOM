@@ -31,7 +31,9 @@
   // ---------- App state ----------
   let drugData = [];
   let recentSearches = [];
-  let userZip = null, userCity = null, userState = null, userRadius = null;
+  // Location is pinned — we only serve pricing for the Milwaukee, WI area.
+  const userZip = '53214';
+  const userRadius = '10';
   let currentNDC = '';            // cleaned NDC (no dashes)
   let currentQuantity = null;     // exact quantity used for the last search
   let currentSKU = null;          // { name, strength, uom, form, ndcs:[], packSize }
@@ -188,36 +190,6 @@
     }
   }
 
-  // ---------- Location storage ----------
-  function saveLocationToLocalStorage(zip, city, state, radius, manual = false) {
-    localStorage.setItem('userZip', zip);
-    localStorage.setItem('userCity', city);
-    localStorage.setItem('userState', state);
-    localStorage.setItem('userRadius', radius);
-    if (manual) localStorage.setItem('userZipTimestamp', Date.now().toString());
-    else localStorage.removeItem('userZipTimestamp');
-  }
-  function loadLocationFromLocalStorage() {
-    const ts = localStorage.getItem('userZipTimestamp');
-    const expired = ts && (Date.now() - parseInt(ts, 10) > 24 * 60 * 60 * 1000);
-    if (expired) {
-      ['userZip', 'userCity', 'userState', 'userRadius', 'userZipTimestamp'].forEach(k => localStorage.removeItem(k));
-      return { zip: null, city: null, state: null, radius: null };
-    }
-    return {
-      zip: localStorage.getItem('userZip'),
-      city: localStorage.getItem('userCity'),
-      state: localStorage.getItem('userState'),
-      radius: localStorage.getItem('userRadius')
-    };
-  }
-  function ensureLocationDefaults() {
-    if (!userZip) userZip = '00000';
-    if (!userCity) userCity = 'Default City';
-    if (!userState) userState = 'Default State';
-    if (!userRadius) userRadius = '10';
-  }
-
   // ---------- API: Phoenix PBM (full formulary drug search — feeds typeahead) ----------
   async function fetchPhoenixDrugs(query = '') {
     const q = String(query || '').trim();
@@ -282,35 +254,6 @@
       if (row) hits.push(row);
     }
     return hits.length ? pickBestXanoRow(hits) : null;
-  }
-
-  // ---------- GPS detection (for external location widgets) ----------
-  // Resolves to `{ zip, city, state }` or null. Uses BigDataCloud's keyless
-  // reverse-geocoder; fails soft on permission denial, timeout, or lookup
-  // errors so callers can render a clear "permission denied" state.
-  async function detectByBrowser() {
-    if (!navigator?.geolocation) return null;
-    try {
-      const coords = await new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          p => resolve(p.coords),
-          e => reject(e),
-          { timeout: 10000, maximumAge: 60000 }
-        );
-      });
-      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client`
-        + `?latitude=${coords.latitude}&longitude=${coords.longitude}&localityLanguage=en`;
-      const r = await fetch(url);
-      if (!r.ok) return null;
-      const d = await r.json();
-      const zip = d?.postcode || '';
-      const city = d?.city || d?.locality || '';
-      const state = String(d?.principalSubdivisionCode || '').replace(/^US-/, '');
-      if (!zip) return null;
-      return { zip, city, state };
-    } catch (_) {
-      return null;
-    }
   }
 
   // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
@@ -453,103 +396,6 @@
       }
       updateFloatLabel(field);
     });
-
-    // ----- Location bootstrapping -----
-    function displayLocation(zip, city, state, radius) {
-      const zipEl = document.getElementById('location-zip');
-      const cityEl = document.getElementById('location-city');
-      const stateEl = document.getElementById('location-state');
-      const radEl = document.getElementById('radius');
-      if (zipEl) zipEl.innerText = zip || 'N/A';
-      if (cityEl) cityEl.innerText = city || 'N/A';
-      if (stateEl) stateEl.innerText = state || 'N/A';
-      if (radEl) radEl.innerText = radius || '10';
-    }
-
-    const stored = loadLocationFromLocalStorage();
-    userZip = stored.zip; userCity = stored.city; userState = stored.state; userRadius = stored.radius;
-
-    if (!userZip || !userCity || !userState || !userRadius) {
-      (async function fetchLocationByIp() {
-        try {
-          const ip = (await (await fetch('https://api.ipify.org?format=json')).json()).ip;
-          const loc = await (await fetch(`https://ipapi.co/${ip}/json/`)).json();
-          userZip = loc.postal || '00000';
-          userCity = loc.city || 'Default City';
-          userState = loc.region || 'Default State';
-          userRadius = '10';
-          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, false);
-          displayLocation(userZip, userCity, userState, userRadius);
-        } catch (e) {
-          console.error('Error fetching location data:', e);
-          ensureLocationDefaults();
-          displayLocation(userZip, userCity, userState, userRadius);
-        }
-      })();
-    } else {
-      displayLocation(userZip, userCity, userState, userRadius);
-    }
-
-    // ----- Location form -----
-    const form = document.getElementById('update-location-form');
-    if (form) {
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const zip = document.getElementById('zip')?.value.trim();
-        let radius = document.getElementById('search-radius')?.value.trim();
-        const failBox = document.querySelector('.w-form-fail');
-        if (!zip) return;
-        if (!radius) radius = '10';
-
-        const errors = [];
-        if (!/^\d{5}(-\d{4})?$/.test(zip)) errors.push('Invalid ZIP code format. Use 12345 or 12345-6789.');
-        const rNum = Number(radius);
-        if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) errors.push('Invalid radius. Enter a number between 1 and 500.');
-
-        if (errors.length) {
-          if (failBox) { failBox.innerText = errors.join('\n'); failBox.style.display = 'block'; }
-          return;
-        } else if (failBox) { failBox.innerText = ''; failBox.style.display = 'none'; }
-
-        try {
-          const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
-          userCity = data.places?.[0]?.['place name'] || '';
-          userState = data.places?.[0]?.['state abbreviation'] || '';
-          userZip = zip;
-          userRadius = radius;
-
-          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, true);
-          displayLocation(userZip, userCity, userState, userRadius);
-
-          if (currentNDC && Number.isFinite(currentQuantity)) {
-            await fetchAndRenderCompetitors({ ndc: currentNDC, quantity: currentQuantity });
-          }
-        } catch (err) {
-          console.error('Error fetching ZIP code data:', err);
-          displayLocation('Error', 'Error', 'Error', 'Error');
-        }
-      });
-
-      const zipInput = document.getElementById('zip');
-      if (zipInput) {
-        zipInput.addEventListener('input', debounce(async () => {
-          const zip = zipInput.value.trim();
-          let radius = document.getElementById('search-radius')?.value.trim() || '10';
-          if (!/^\d{5}(-\d{4})?$/.test(zip)) return;
-          const rNum = Number(radius);
-          if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) return;
-
-          try {
-            const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
-            const previewCity = data.places?.[0]?.['place name'] || '';
-            const previewState = data.places?.[0]?.['state abbreviation'] || '';
-            displayLocation(zip, previewCity, previewState, radius);
-          } catch (err) {
-            console.error('ZIP preview failed:', err);
-          }
-        }, 350));
-      }
-    }
 
     // ----- Recents -----
     function storeRecentSearch(drugName, details) {
@@ -1001,32 +847,6 @@
     }
     // Warm the Xano override map so tier-1 lookup is instant at selection time.
     loadXanoOverrides();
-
-    // ----- External API (for location widget and other embeds) -----
-    // Surfaces the IIFE's private state under window.altScripts so embeds
-    // can read/update location and kick off a search without reaching in.
-    window.altScripts = {
-      getLocation() {
-        return { zip: userZip, city: userCity, state: userState, radius: userRadius };
-      },
-      async setLocation({ zip, city, state, radius, source } = {}) {
-        userZip = zip || userZip;
-        userCity = city || '';
-        userState = state || '';
-        userRadius = radius || userRadius || '10';
-        saveLocationToLocalStorage(userZip, userCity, userState, userRadius, source === 'manual');
-        displayLocation(userZip, userCity, userState, userRadius);
-        if (currentNDC && Number.isFinite(currentQuantity)) {
-          await fetchAndRenderCompetitors({ ndc: currentNDC, quantity: currentQuantity });
-        }
-      },
-      detectByBrowser,
-      search() {
-        if (!currentSKU || !Number.isFinite(currentQuantity)) return null;
-        return handleDrugSearch(currentSKU.label, currentQuantity);
-      }
-    };
-    document.dispatchEvent(new CustomEvent('altscripts:ready'));
   });
 })();
 
