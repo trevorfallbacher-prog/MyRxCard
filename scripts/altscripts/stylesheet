@@ -1,67 +1,233 @@
 <head>
   <style>
-    /* ✅ Layout sanity */
-    *, *::before, *::after { box-sizing: border-box; }
+
+    /* ── FORM ── */
 
     .form-group {
-      margin-bottom: 20px;
-    }
-
-    select:disabled {
-      background-color: #e6e6e6;
-      color: #666;
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    .search {
-      margin-bottom: 20px;
-      background: blue;
-      color: white;
-    }
-
-    .search:hover {
-      background-color: white;
+      position: relative;
+      margin-bottom: 0;
     }
 
     .form-group label {
-      display: block;
-      margin-bottom: 8px;
-      font-weight: normal;
-      color: #989898;
+      position: absolute;
+      left: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 15px;
+      font-weight: 400;
+      color: #a0a4ab;
+      pointer-events: none;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      background: transparent;
+      padding: 0 4px;
+      z-index: 1;
+    }
+
+    /* Float label up when focused or has value — JS adds .label-float */
+    .form-group .label-float {
+      top: 0;
+      transform: translateY(-50%);
+      font-size: 11px;
+      font-weight: 600;
+      color: #3884a4;
+      background: #fff;
+      letter-spacing: 0.4px;
     }
 
     .form-group input,
-    .form-group select,
-    .form-group button {
+    .form-group select {
       width: 100%;
-      height: 60px;
-      padding: 10px;
-      font-size: 16px;
-      border: 1px solid #ccc;
-      border-radius: 14px;
+      height: 56px;
+      padding: 16px 16px 8px;
+      font-size: 15px;
+      font-family: inherit;
+      color: #1a1a2e;
+      background: #fff;
+      border: 1.5px solid #dde1e7;
+      border-radius: 12px;
+      outline: none;
+      transition: border-color 0.25s ease, box-shadow 0.25s ease;
+      -webkit-appearance: none;
+      appearance: none;
     }
 
+    .form-group input::placeholder,
+    .form-group input::-webkit-input-placeholder,
+    .form-group input::-moz-placeholder {
+      color: transparent !important;
+      opacity: 0 !important;
+    }
+
+    .form-group input:disabled,
+    .form-group select:disabled {
+      background: #e8eaed !important;
+      border-color: #d1d5db !important;
+      color: #9ca0a8 !important;
+      cursor: not-allowed !important;
+      opacity: 1 !important;
+    }
+
+    .form-group input:disabled ~ label,
+    .form-group select:disabled ~ label,
+    .form-group:has(input:disabled) label,
+    .form-group:has(select:disabled) label {
+      color: #b0b4bc !important;
+    }
+
+    #searchButton:disabled {
+      background: #c8ccd1 !important;
+      color: #f0f2f5 !important;
+      cursor: not-allowed !important;
+      box-shadow: none !important;
+      transform: none !important;
+      opacity: 1 !important;
+    }
+
+    #searchButton:disabled:hover {
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus {
+      border-color: #3884a4;
+      box-shadow: 0 0 0 3px rgba(56, 132, 164, 0.12);
+    }
+
+    .form-group select {
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7' fill='none'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      padding-right: 40px;
+    }
+
+    /* Row layout */
+    .form-row {
+      display: flex;
+      gap: 12px;
+      margin: 0;
+    }
+
+    .form-row .form-group {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* ── SUGGESTIONS DROPDOWN ── */
+
     .suggestions {
-      /* border: 1px solid #ccc; */
-      border-radius: 4px;
-      max-height: 200px;
-      overflow-y: auto;
-      background: white;
       position: absolute;
-      z-index: 3;
+      top: calc(100% + 4px);
+      left: 0;
       width: 100%;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); /* Modern drop shadow */
+      max-height: 240px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #e2e5ea;
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.04);
+      z-index: 100;
+      padding: 6px 0;
+      scrollbar-width: thin;
+    }
+
+    .suggestions:empty {
+      display: none;
     }
 
     .drug-option {
-      padding: 10px;
+      padding: 10px 16px;
+      font-size: 14px;
+      color: #2c3e50;
       cursor: pointer;
+      border-radius: 8px;
+      margin: 2px 6px;
+      transition: background 0.15s ease, color 0.15s ease;
     }
 
     .drug-option:hover {
-      background-color: #f0f0f0;
+      background: #edf5fa;
+      color: #1a6b8a;
     }
+
+    /* ── SEARCH BUTTON ── */
+
+    #searchButton {
+      width: 100%;
+      height: 52px;
+      background: linear-gradient(135deg, #3884a4 0%, #2a6d8a 100%);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: 0.3px;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s ease, box-shadow 0.25s ease;
+    }
+
+    #searchButton:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(56, 132, 164, 0.3);
+    }
+
+    #searchButton:active {
+      transform: translateY(0) scale(0.98);
+    }
+
+    /* Ripple on click */
+    #searchButton::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at var(--x, 50%) var(--y, 50%), rgba(255,255,255,0.3) 0%, transparent 60%);
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+
+    #searchButton:active::after {
+      opacity: 1;
+    }
+
+    /* ── MOBILE ── */
+
+    @media (max-width: 600px) {
+      .form-row {
+        flex-direction: column;
+        gap: 0;
+      }
+
+      .pharmacy-cards {
+        grid-template-columns: 1fr;
+        gap: 24px;
+        padding: 8px 4px;
+      }
+
+      .pharmacy-card {
+        padding: 28px 20px 20px;
+        margin-bottom: 15px;
+      }
+
+      .pharmacy-card.featured-pharmacy {
+        margin-top: 16px;
+        overflow: visible;
+      }
+
+      .pharmacy-card.featured-pharmacy .holo-sheen,
+      .pharmacy-card.featured-pharmacy .ripple {
+        overflow: hidden;
+        border-radius: 10px;
+      }
+
+      .pharmacy-card .price {
+        font-size: 26px;
+      }
+    }
+
 
     .recent-searches {
       margin-top: 20px;
@@ -72,18 +238,16 @@
     .recent-searches .search-item {
       padding: 8px 12px;
       margin: 5px 0;
-      background-color: blue;
+      background-color: #44908db3;
       color: white;
       border-radius: 16px;
       cursor: pointer;
       display: flex;
       align-items: center;
-      transition: all 0.3s ease-in-out;
     }
 
     .recent-searches .search-item:hover {
-      background-color: blue;
-      transition: all 0.3s ease-in-out;
+      background-color: #44908db3;
     }
 
     .recent-searches .search-item.active-search {
@@ -109,14 +273,26 @@
     .pharmacy-card {
       background: white;
       text-align: center;
-      padding: 20px;
-      border: 2px solid #2c5c9f;
-      border-radius: 0px;
-      transition: transform 0.3s ease;
+      padding: 24px 16px 20px;
+      border-radius: 12px;
+      border: 2px solid transparent;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+      cursor: pointer;
+      position: relative;
+      transform-origin: center center;
+      will-change: transform;
+      overflow: hidden;
+      transform-style: preserve-3d;
+      transition:
+        transform 0.65s cubic-bezier(0.34, 1.42, 0.64, 1),
+        background-color 0.4s ease,
+        border-color 0.4s ease,
+        box-shadow 0.45s cubic-bezier(0.34, 1.42, 0.64, 1);
     }
 
-    .pharmacy-card:hover {
-      transform: scale(1.00);
+    .pharmacy-card:hover:not(.selected):not(.animate-click) {
+      transform: scale(1.03);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
     }
 
     .pharmacy-card h3 {
@@ -132,24 +308,205 @@
       font-size: 32px;
       color: black;
       font-weight: bold;
+      transition: color 0.4s ease, transform 0.4s ease;
+      position: relative;
+      z-index: 1;
     }
 
     .pharmacy-card.selected {
-      background-color: white;
+      background-color: #eef4fb;
+      border-color: #3884a4;
+      transform: scale(1.075) !important;
+      box-shadow: 0 22px 50px rgba(56,132,164,0.22) !important;
     }
 
-    .clear-search {
+    .pharmacy-card.selected .price {
+      color: #3884a4;
+      transform: scale(1.06);
+    }
+
+    .pharmacy-card.featured-pharmacy {
+      border-color: #44908d;
+      background-color: #f5f5f5;
+      overflow: visible;
+    }
+
+    .pharmacy-card.featured-pharmacy.selected {
+      background-color: #fdf8ee;
+      border-color: #c9a84c;
+      transform: scale(1.075) !important;
+      box-shadow: 0 22px 50px rgba(180,140,60,0.2) !important;
+    }
+
+    .pharmacy-card.featured-pharmacy.selected .price {
+      color: #a07830;
+    }
+
+    .pharmacy-card.animate-click {
+      animation: punchBounce 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+    }
+
+    @keyframes punchBounce {
+      0%   { transform: scale(1.03);  }
+      30%  { transform: scale(1.14);  }
+      100% { transform: scale(1.075); }
+    }
+
+    .pharmacy-card.animate-deselect {
+      animation: punchDeselect 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+    }
+
+    @keyframes punchDeselect {
+      0%   { transform: scale(1.075); }
+      40%  { transform: scale(0.97);  }
+      100% { transform: scale(1);     }
+    }
+
+    .holo-sheen {
+      position: absolute;
+      inset: 0;
+      border-radius: 10px;
+      pointer-events: none;
+      z-index: 2;
+      opacity: 0;
+      transition: opacity 0.35s ease;
+    }
+
+    .featured-badge {
+      position: absolute;
+      top: -13px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #44908d;
       color: white;
-      padding-left: 15px;
-      position: relative;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 12px;
+      border-radius: 20px;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      transition:
+        transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        box-shadow 0.4s ease,
+        background-color 0.4s ease;
+      z-index: 3;
     }
 
-    /* =========================
-       Inline spinner (if used)
-    ========================== */
+    .pharmacy-card.featured-pharmacy.selected .featured-badge {
+      background: #c9a84c;
+      transform: translateX(-50%) scale(1.07);
+      box-shadow: 0 3px 10px rgba(180,140,60,0.35);
+    }
+
+    .featured-badge .shimmer-bar {
+      position: absolute;
+      top: 0; left: -60%;
+      width: 40%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+      animation: shimmerLoop 4s ease-in-out 1s infinite;
+    }
+
+    @keyframes shimmerLoop {
+      0%   { left: -60%; opacity: 0; }
+      5%   { opacity: 1; }
+      40%  { left: 160%; opacity: 1; }
+      41%  { opacity: 0; }
+      100% { left: 160%; opacity: 0; }
+    }
+
+    /* Dot — regular cards only */
+    .dot {
+      position: absolute;
+      bottom: 10px;
+      right: 12px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #3884a4;
+      opacity: 0;
+      transform: scale(0);
+      transition: opacity 0.15s ease;
+      z-index: 3;
+    }
+
+    .pharmacy-card.selected .dot {
+      opacity: 1;
+      animation: dotPop 0.5s cubic-bezier(0.34, 1.9, 0.64, 1) forwards,
+                 dotPulse 2s ease-in-out 0.55s infinite;
+    }
+
+    /* Featured cards use star instead — hide dot entirely */
+    .pharmacy-card.featured-pharmacy .dot {
+      display: none;
+    }
+
+    @keyframes dotPop {
+      0%   { transform: scale(0);    }
+      55%  { transform: scale(1.5);  }
+      75%  { transform: scale(0.82); }
+      100% { transform: scale(1);    }
+    }
+
+    @keyframes dotPulse {
+      0%,100% { box-shadow: 0 0 0 0px rgba(56,132,164,0.45); }
+      50%     { box-shadow: 0 0 0 5px rgba(56,132,164,0);    }
+    }
+
+    /* Star canvas — featured cards only */
+    .star-canvas {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      width: 28px;
+      height: 28px;
+      z-index: 10;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .pharmacy-card.featured-pharmacy.selected .star-canvas {
+      animation: starPop 0.7s cubic-bezier(0.34, 2.0, 0.64, 1) 0s forwards;
+    }
+
+    @keyframes starPop {
+      0%   { opacity: 0; transform: scale(0) rotate(-45deg); }
+      55%  { opacity: 1; transform: scale(1.5) rotate(8deg); }
+      75%  { transform: scale(0.9) rotate(-2deg); }
+      100% { opacity: 1; transform: scale(1) rotate(0deg); }
+    }
+
+    /* Ripple */
+    .ripple {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(56,132,164,0.15);
+      transform: scale(0);
+      pointer-events: none;
+      animation: rippleOut 0.55s ease-out forwards;
+      z-index: 0;
+      overflow: visible;
+    }
+
+    .featured-pharmacy .ripple { background: rgba(180,140,60,0.15); }
+
+    @keyframes rippleOut {
+      to { transform: scale(4.5); opacity: 0; }
+    }
+
+    /* NOTE: main.js staggers card entrance via a .card-visible class. altscripts
+       doesn't add that class, so we keep cards visible by default. The
+       .card-visible rule stays for compatibility if it ever does get wired. */
+    .pharmacy-card.card-visible {
+      opacity: 1;
+      transform: scale(1);
+    }
+
     .loader {
       border: 8px solid #f3f3f3;
-      border-top: 8px solid #3884a4; /* myrxtheme color */
+      border-top: 8px solid #3884a4;
       border-radius: 50%;
       width: 50px;
       height: 50px;
@@ -161,14 +518,17 @@
       display: none;
     }
 
-    @keyframes spin {
-      0% { transform: translate(-50%, -50%) rotate(0deg); }
-      100% { transform: translate(-50%, -50%) rotate(360deg); }
+    .clear-search {
+      color: #fff;
+      padding-left: 15px;
+      position: relative;
     }
 
-    /* =========================
-       Fullscreen Loader Capsule
-    ========================== */
+    @keyframes spin {
+      0%   { transform: rotate(0deg);   }
+      100% { transform: rotate(360deg); }
+    }
+
     #dynamic-loader {
       position: fixed;
       top: 0;
@@ -206,7 +566,7 @@
     }
 
     .half-left {
-      background: blue;
+      background: #3884a4;
       border-radius: 50% 0 0 50%;
       left: 0;
     }
@@ -218,12 +578,12 @@
     }
 
     @keyframes openCapsule {
-      0% { transform: scaleX(1); }
+      0%   { transform: scaleX(1);   }
       100% { transform: scaleX(1.2); }
     }
 
-    .pill-container:hover .half-left { transform: translateX(-20px); }
-    .pill-container:hover .half-right { transform: translateX(20px); }
+    .pill-container:hover .half-left  { transform: translateX(-20px); }
+    .pill-container:hover .half-right { transform: translateX(20px);  }
 
     .sparkles {
       position: absolute;
@@ -246,15 +606,15 @@
       animation: sparkleEffect 1.5s infinite ease-in-out;
     }
 
-    .sparkle:nth-child(1) { left: 10px; animation-delay: 0s; }
+    .sparkle:nth-child(1) { left: 10px; animation-delay: 0s;   }
     .sparkle:nth-child(2) { left: 30px; animation-delay: 0.3s; }
     .sparkle:nth-child(3) { left: 50px; animation-delay: 0.6s; }
     .sparkle:nth-child(4) { left: 70px; animation-delay: 0.9s; }
     .sparkle:nth-child(5) { left: 90px; animation-delay: 1.2s; }
 
     @keyframes sparkleEffect {
-      0% { top: 20px; opacity: 1; transform: scale(0.5); }
-      50% { opacity: 1; transform: scale(1.2); }
+      0%   { top: 20px;  opacity: 1; transform: scale(0.5); }
+      50%  { opacity: 1; transform: scale(1.2); }
       100% { top: -20px; opacity: 0; transform: scale(0.8); }
     }
 
@@ -266,14 +626,13 @@
     }
 
     /* =========================
-       Card style B (list row)
-       ✅ FIXES the clipping issue
+       altScripts-only: Card style B (competitor list row)
     ========================== */
     .pharmacy-card1 {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;                 /* breathing room between columns */
+      gap: 12px;
       padding: 15px;
       margin-bottom: 10px;
       border: 2px solid #2c5c9f;
@@ -306,13 +665,11 @@
       color: black;
     }
 
-    /* Key: allow left side to shrink so price doesn't push out of the card */
     .pharmacy-card1 .pharmacy-details {
       flex: 1 1 auto;
-      min-width: 0; /* ✅ prevents flex overflow */
+      min-width: 0;
     }
 
-    /* Prevent long names from forcing overflow */
     .pharmacy-card1 .pharmacy-details h4,
     .pharmacy-card1 .pharmacy-details h1,
     .pharmacy-card1 .pharmacy-details p {
@@ -329,7 +686,7 @@
       text-align: right;
       font-weight: bold;
       color: #015fb6;
-      font-size: 32px; /* was 18px; screenshot shows you want big */
+      font-size: 32px;
     }
 
     @media (max-width: 480px) {
@@ -342,8 +699,15 @@
     }
 
     /* =========================
-       Toggle Switch
+       altScripts-only: Toggle Switch
+       Hidden for now — uncomment / remove `display: none` to re-enable.
     ========================== */
+    .switch,
+    #pharmacy-toggle,
+    label[for="pharmacy-toggle"] {
+      display: none !important;
+    }
+
     .switch {
       position: relative;
       display: inline-block;
