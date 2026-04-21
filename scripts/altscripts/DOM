@@ -474,14 +474,20 @@
     }
 
     // ---------- Suggestions ----------
-    // Quantity options are sourced strictly from Xano — the dropdown only offers
-    // tiers the altScripts formulary actually covers for this SKU's NDCs. Phoenix
-    // MedPackSize is intentionally ignored here so drugs without e.g. a 90-day
-    // Xano row never surface a 90-day option.
+    // Quantity options come from Xano when the SKU's NDCs are in the altScripts
+    // formulary. If Xano has no row for ANY of this SKU's NDCs we fall back to
+    // the legacy [30, 60, 90] + MedPackSize list so Phoenix-only drugs (e.g.
+    // generic OTCs not on our formulary) still get priced against competitors.
     async function populateQuantityDropdown(sku) {
       if (!quantityDropdown) return;
       await loadXanoOverrides();
-      const quantities = getXanoQuantitiesForSKU(sku);
+      let quantities = getXanoQuantitiesForSKU(sku);
+      if (!quantities.length) {
+        const fallback = new Set([30, 60, 90]);
+        const pack = Number(sku?.packSize);
+        if (Number.isFinite(pack) && pack > 0) fallback.add(pack);
+        quantities = [...fallback].sort((a, b) => a - b);
+      }
       quantityDropdown.innerHTML = '<option value=""></option>';
       quantities.forEach(q => {
         const o = document.createElement('option');
@@ -547,9 +553,6 @@
           suggestionsDiv.innerHTML = '';
           if (errEl) errEl.textContent = '';
           await populateQuantityDropdown(sku);
-          if (quantityDropdown && quantityDropdown.disabled && errEl) {
-            errEl.textContent = `${sku.label} is not available in the altScripts formulary.`;
-          }
         });
 
         suggestionsDiv.appendChild(opt);
@@ -691,11 +694,12 @@
         // Make sure the Xano override map is loaded before tier 1 check.
         await loadXanoOverrides();
 
-        // Xano is the source of truth for which tiers this drug is offered at.
-        // Reject anything not present in the override map — belt-and-suspenders
-        // for the dropdown, and covers stale recent-search rehydration.
-        const allowedQuantities = getXanoQuantitiesForSKU(currentSKU);
-        if (!allowedQuantities.includes(quantity)) {
+        // When Xano covers this SKU, it's the source of truth for tiers — reject
+        // anything outside its Quantity list. When Xano doesn't cover the SKU
+        // we skip the gate; the dropdown fell back to the legacy defaults and
+        // Phoenix-only competitor pricing still runs.
+        const xanoAllowed = getXanoQuantitiesForSKU(currentSKU);
+        if (xanoAllowed.length && !xanoAllowed.includes(quantity)) {
           if (errEl) errEl.textContent =
             `${currentSKU.label} is not offered at a ${quantity}-day supply.`;
           if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
