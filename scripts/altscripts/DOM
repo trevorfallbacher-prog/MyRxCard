@@ -256,6 +256,25 @@
     return hits.length ? pickBestXanoRow(hits) : null;
   }
 
+  // Every quantity Xano lists for any NDC in this SKU. This is the authoritative
+  // set of tiers the drug is offered at — the dropdown must never show a tier
+  // outside this list, even if Phoenix's MedPackSize suggests otherwise.
+  function getXanoQuantitiesForSKU(sku) {
+    if (!xanoByKey || !sku?.ndcs?.length) return [];
+    const ndcSet = new Set(sku.ndcs.map(normalizeNDC).filter(Boolean));
+    if (!ndcSet.size) return [];
+    const out = new Set();
+    for (const key of xanoByKey.keys()) {
+      const sep = key.lastIndexOf('|');
+      if (sep < 0) continue;
+      const ndc = key.slice(0, sep);
+      if (!ndcSet.has(ndc)) continue;
+      const qty = Number(key.slice(sep + 1));
+      if (Number.isFinite(qty) && qty > 0) out.add(qty);
+    }
+    return [...out].sort((a, b) => a - b);
+  }
+
   // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
   // groupNum defaults to TPD001 (full market / competitors). Pass 'AS001' for
   // the altScripts-network-only formulary used as the tier-2 price fallback.
@@ -455,15 +474,14 @@
     }
 
     // ---------- Suggestions ----------
-    // Common quantity options appended to the per-SKU pack size.
-    const COMMON_QUANTITIES = [30, 60, 90];
-
-    function populateQuantityDropdown(sku) {
+    // Quantity options are sourced strictly from Xano — the dropdown only offers
+    // tiers the altScripts formulary actually covers for this SKU's NDCs. Phoenix
+    // MedPackSize is intentionally ignored here so drugs without e.g. a 90-day
+    // Xano row never surface a 90-day option.
+    async function populateQuantityDropdown(sku) {
       if (!quantityDropdown) return;
-      const qSet = new Set(COMMON_QUANTITIES);
-      const pack = Number(sku?.packSize);
-      if (Number.isFinite(pack) && pack > 0) qSet.add(pack);
-      const quantities = [...qSet].sort((a, b) => a - b);
+      await loadXanoOverrides();
+      const quantities = getXanoQuantitiesForSKU(sku);
       quantityDropdown.innerHTML = '<option value=""></option>';
       quantities.forEach(q => {
         const o = document.createElement('option');
@@ -523,12 +541,15 @@
         opt.className = 'drug-option';
         opt.textContent = sku.label;
 
-        opt.addEventListener('click', () => {
+        opt.addEventListener('click', async () => {
           currentSKU = sku;
           if (inputField) inputField.value = sku.label;
-          populateQuantityDropdown(sku);
           suggestionsDiv.innerHTML = '';
           if (errEl) errEl.textContent = '';
+          await populateQuantityDropdown(sku);
+          if (quantityDropdown && quantityDropdown.disabled && errEl) {
+            errEl.textContent = `${sku.label} is not available in the altScripts formulary.`;
+          }
         });
 
         suggestionsDiv.appendChild(opt);
@@ -603,7 +624,7 @@
         currentSKU = chosen;
 
         if (chosen) {
-          populateQuantityDropdown(chosen);
+          await populateQuantityDropdown(chosen);
           if (inputField) inputField.value = chosen.label;
           const preferred = Number(details.quantity);
           if (Number.isFinite(preferred) && quantityDropdown) {
@@ -669,6 +690,18 @@
 
         // Make sure the Xano override map is loaded before tier 1 check.
         await loadXanoOverrides();
+
+        // Xano is the source of truth for which tiers this drug is offered at.
+        // Reject anything not present in the override map — belt-and-suspenders
+        // for the dropdown, and covers stale recent-search rehydration.
+        const allowedQuantities = getXanoQuantitiesForSKU(currentSKU);
+        if (!allowedQuantities.includes(quantity)) {
+          if (errEl) errEl.textContent =
+            `${currentSKU.label} is not offered at a ${quantity}-day supply.`;
+          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+          setResultsVisible(false);
+          return;
+        }
 
         if (errEl) errEl.textContent = '';
 
