@@ -115,6 +115,22 @@
       .trim();
   }
 
+  // ---------- Allowed dispensing tiers (cross-reference against Xano rows) ----------
+  // The Xano response is the authoritative list. A quantity tier is only valid
+  // if at least one Active row for that exact MedDrugName carries that Quantity.
+  function getAllowedQuantities(rows, medDrugName) {
+    const name = String(medDrugName || '').trim();
+    if (!name || !Array.isArray(rows)) return [];
+    const out = new Set();
+    for (const row of rows) {
+      if (!isActiveRow(row)) continue;
+      if (String(row.MedDrugName || '').trim() !== name) continue;
+      const q = Number(row.Quantity);
+      if (Number.isFinite(q) && q > 0) out.add(q);
+    }
+    return [...out].sort((a, b) => a - b);
+  }
+
   // ---------- Local text filter for drugs ----------
   function filterDrugsLocal(list = [], query = '') {
     const q = String(query || '').trim().toLowerCase();
@@ -206,7 +222,7 @@
     const payload = {
       memberNumber: '01',
       ndc: String(ndc || '').replace(/-/g, ''),
-      quantity: Number(quantity) || 30,
+      quantity: Number(quantity),
       daysSupply: 3,
       groupNum: 'TPD001',
       zip: zip || '00000',
@@ -481,13 +497,7 @@
         opt.addEventListener('click', () => {
           if (inputField) inputField.value = drug.MedDrugName;
 
-          const matches = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
-          const qSet = new Set();
-          matches.forEach(row => {
-            const q = Number(row.Quantity);
-            if (Number.isFinite(q) && q > 0) qSet.add(q);
-          });
-          const quantities = [...qSet].sort((a, b) => a - b);
+          const quantities = getAllowedQuantities(drugs, drug.MedDrugName);
 
           if (quantityDropdown) {
             quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
@@ -551,14 +561,9 @@
         if (suggestionsDiv) suggestionsDiv.innerHTML = '';
         drugData = drugs;
 
-        const qSet = new Set();
-        drugs.forEach(row => {
-          if (row.MedDrugName?.toLowerCase() === query.toLowerCase()) {
-            const q = Number(row.Quantity);
-            if (Number.isFinite(q) && q > 0) qSet.add(q);
-          }
-        });
-        const quantities = [...qSet].sort((a,b)=>a-b);
+        const match = drugs.find(r => String(r.MedDrugName || '').toLowerCase() === query.toLowerCase());
+        const canonicalName = match?.MedDrugName || query;
+        const quantities = getAllowedQuantities(drugs, canonicalName);
 
         if (quantityDropdown) {
           quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
@@ -610,7 +615,7 @@
     }
 
     // ----- Main search (owns loader lifecycle) -----
-    async function handleDrugSearch(drugName, quantity = 30) {
+    async function handleDrugSearch(drugName, quantity) {
       if (_loaderCount === 0) showLoader();
       await paintNextFrame();
       const t0 = performance.now();
@@ -626,12 +631,23 @@
 
         currentQuantity = quantity;
 
+        // Cross-reference the quantity tier against Xano rows for this drug.
+        // Prevents ever dispatching a tier that is not present in the formulary.
+        const allowed = getAllowedQuantities(drugData, drugName);
+        if (!allowed.includes(quantity)) {
+          if (errEl) errEl.textContent =
+            `${drugName} is not offered in a ${quantity}-day supply.`;
+          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+          setResultsVisible(false);
+          return;
+        }
+
         // Find exact row from prior fetch
         const selectedDrug = (drugData || []).find(d =>
           d?.MedDrugName === drugName && Number(d?.Quantity) === quantity
         );
 
-        // ✅ Hard block: do not render if not Active
+        // Hard block: do not render if not Active
         if (!selectedDrug || !isActiveRow(selectedDrug)) {
           if (errEl) errEl.textContent = 'This drug is not currently active in the formulary.';
           if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
