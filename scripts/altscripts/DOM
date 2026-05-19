@@ -246,6 +246,34 @@
     return rows.filter(p => p?.Pricing?.PatientPay && p?.Pharmacy?.Name);
   }
 
+  // ---------- RxNorm brand→generic lookup ----------
+  // Only returns a generic name when RxNorm confirms tty=BN (Brand Name),
+  // so generics, salts, and unknowns never trigger the banner.
+  async function getGenericForBrand(drugName) {
+    try {
+      const r1 = await fetch(
+        `https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(drugName)}&search=1`
+      );
+      if (!r1.ok) return null;
+      const d1 = await r1.json();
+      const rxcui = d1?.idGroup?.rxnormId?.[0];
+      if (!rxcui) return null;
+
+      const r2 = await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/properties.json`);
+      if (!r2.ok) return null;
+      const d2 = await r2.json();
+      if (d2?.properties?.tty !== 'BN') return null;
+
+      const r3 = await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/related.json?tty=IN`);
+      if (!r3.ok) return null;
+      const d3 = await r3.json();
+      const inGroup = (d3?.relatedGroup?.conceptGroup || []).find(g => g.tty === 'IN');
+      return inGroup?.conceptProperties?.[0]?.name?.toLowerCase() || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ---------- CONSOLIDATE: one per CHAIN (cheapest representative) ----------
   function consolidateUniquePharmacies(rows = []) {
     const map = new Map();
@@ -720,6 +748,8 @@
 
         await fetchAndRenderCompetitors({ ndc: ndcClean, quantity });
 
+        showGenericAlternativesBanner(selectedDrug);
+
       } catch (e) {
         console.error('handleDrugSearch error:', e);
         if (errEl) errEl.textContent = 'Something went wrong loading price.';
@@ -729,6 +759,105 @@
         console.log('total handleDrugSearch ms:', Math.round(t1 - t0));
         hideLoader();
       }
+    }
+
+    async function showGenericAlternativesBanner(selectedDrug) {
+      document.getElementById('generic-alt-banner')?.remove();
+      if (!selectedDrug?.MedDrugName) return;
+
+      const genericName = await getGenericForBrand(selectedDrug.MedDrugName);
+      if (!genericName) return;
+
+      const genericDrugs = await fetchDrugs(genericName);
+      if (!genericDrugs?.length) return;
+
+      // Prefer same strength + form when those fields exist, otherwise fall
+      // back progressively. Mirrors main.js behavior.
+      const match =
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength && d.DosageForm === selectedDrug.DosageForm) ||
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength) ||
+        genericDrugs.find(d => d.DosageForm  === selectedDrug.DosageForm)  ||
+        genericDrugs[0];
+      if (!match?.MedDrugName) return;
+      const altName = match.MedDrugName;
+
+      if (!document.getElementById('generic-alt-style')) {
+        const style = document.createElement('style');
+        style.id = 'generic-alt-style';
+        style.textContent = '@keyframes genericBannerFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}';
+        document.head.appendChild(style);
+      }
+
+      const banner = document.createElement('div');
+      banner.id = 'generic-alt-banner';
+      banner.style.cssText = [
+        'display:flex','align-items:flex-start','gap:12px',
+        'background:#eaf6f0','border:1.5px solid #2a7a4f','border-radius:12px',
+        'padding:14px 18px','margin-bottom:16px','font-family:inherit',
+        'animation:genericBannerFadeIn 0.35s ease'
+      ].join(';');
+      banner.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2a7a4f"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             style="flex-shrink:0;margin-top:2px">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <circle cx="12" cy="16" r="0.5" fill="#2a7a4f"/>
+        </svg>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:6px;">
+            Generic alternative available
+          </div>
+          <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
+            <strong>${altName}</strong> is a generic version of
+            <strong>${selectedDrug.MedDrugName}</strong> and may cost significantly less.
+          </div>
+          <button id="generic-alt-btn" style="
+            margin-top:10px;background:#2a7a4f;color:#fff;border:none;
+            border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;
+            cursor:pointer;font-family:inherit;transition:background 0.15s ease;
+          " onmouseover="this.style.background='#225f3d'"
+            onmouseout="this.style.background='#2a7a4f'">
+            Search for ${altName}
+          </button>
+        </div>
+        <button aria-label="Dismiss" style="
+          background:none;border:none;cursor:pointer;padding:0 0 0 4px;
+          color:#2a7a4f;font-size:16px;line-height:1;flex-shrink:0;opacity:0.55;
+        " onclick="document.getElementById('generic-alt-banner').remove()">&#x2715;</button>
+      `;
+
+      const anchor = document.getElementById('pinnedPharmacyList');
+      if (!anchor) return;
+      anchor.insertAdjacentElement('beforebegin', banner);
+
+      document.getElementById('generic-alt-btn').addEventListener('click', async () => {
+        banner.remove();
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+
+        inputField.value = altName;
+        drugData = genericDrugs;
+
+        const allowed = getAllowedQuantities(genericDrugs, altName);
+        if (quantityDropdown) {
+          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+          allowed.forEach(q => {
+            const o = document.createElement('option');
+            o.value = q; o.textContent = q;
+            quantityDropdown.appendChild(o);
+          });
+          quantityDropdown.disabled = allowed.length === 0;
+        }
+        if (!allowed.length) return;
+
+        const preferred = Number(currentQuantity);
+        const chosen = (Number.isFinite(preferred) && allowed.includes(preferred))
+          ? preferred
+          : allowed[0];
+        if (quantityDropdown) quantityDropdown.value = String(chosen);
+
+        await handleDrugSearch(altName, chosen);
+      });
     }
 
     function initializePharmacyCardListeners_SingleCard() {
