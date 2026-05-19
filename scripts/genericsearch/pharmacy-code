@@ -1,0 +1,729 @@
+<script>
+(function(){
+  const s = window._rxState;
+  if (!s || s.pageType !== 'pharmacy') return;
+
+  // ---- RxNorm brand→generic lookup ----
+  // Only returns a generic name when RxNorm confirms tty=BN (Brand Name),
+  // so generics, salts, ingredients, and unknown names never trigger a false
+  // banner. Lives outside DOMContentLoaded — pure fetch, no DOM access.
+  async function getGenericForBrand(drugName) {
+    try {
+      const r1 = await fetch(
+        `https://rxnav.nlm.nih.gov/REST/rxcui.json?name=${encodeURIComponent(drugName)}&search=1`
+      );
+      if (!r1.ok) return null;
+      const d1 = await r1.json();
+      const rxcui = d1?.idGroup?.rxnormId?.[0];
+      if (!rxcui) return null;
+
+      const r2 = await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/properties.json`);
+      if (!r2.ok) return null;
+      const d2 = await r2.json();
+      if (d2?.properties?.tty !== 'BN') return null;
+
+      const r3 = await fetch(`https://rxnav.nlm.nih.gov/REST/rxcui/${rxcui}/related.json?tty=IN`);
+      if (!r3.ok) return null;
+      const d3 = await r3.json();
+      const inGroup = (d3?.relatedGroup?.conceptGroup || []).find(g => g.tty === 'IN');
+      return inGroup?.conceptProperties?.[0]?.name?.toLowerCase() || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    s.injectDisabledDropdownStyles();
+
+    const inputField         = document.getElementById('inputDrugs');
+    const suggestionsDiv     = document.getElementById('drugSuggestions');
+    const dosageDropdown     = document.getElementById('dosageDropdown');
+    const formDropdown       = document.getElementById('formDropdown');
+    const pharmacyListDiv    = document.getElementById('pinnedPharmacyList');
+    const recentSearchesList = document.getElementById('recentSearchesList');
+    const resultsDiv         = document.getElementById('results-div');
+    const searchBtn          = document.getElementById('searchButton');
+
+    if (resultsDiv)     resultsDiv.style.display = 'none';
+    if (dosageDropdown) dosageDropdown.disabled  = true;
+    if (formDropdown)   formDropdown.disabled    = true;
+
+    const CMS_GROUP_NUM_RAW = "{{wf {&quot;path&quot;:&quot;partner:groupnum&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}";
+    const cmsGroupNum = CMS_GROUP_NUM_RAW.trim() || null;
+
+    function displayLocation(zip, city, state, radius) {
+      const zipEl   = document.getElementById('location-zip');
+      const cityEl  = document.getElementById('location-city');
+      const stateEl = document.getElementById('location-state');
+      const radEl   = document.getElementById('radius');
+      if (zipEl)   zipEl.innerText   = zip    || 'N/A';
+      if (cityEl)  cityEl.innerText  = city   || 'N/A';
+      if (stateEl) stateEl.innerText = state  || 'N/A';
+      if (radEl)   radEl.innerText   = radius || '10';
+    }
+
+    // ---- Boot location ----
+    const stored = s.loadLocationFromLocalStorage();
+    s.userZip = stored.zip; s.userCity = stored.city; s.userState = stored.state; s.userRadius = stored.radius;
+    s.ipDetectedZip = s.userZip; s.ipDetectedCity = s.userCity;
+    s.ipDetectedState = s.userState; s.ipDetectedSource = 'stored';
+
+    if (!s.userZip || !s.userCity || !s.userState || !s.userRadius) {
+      s.detectByIp().then(result => {
+        s.userZip = result.zip; s.userCity = result.city;
+        s.userState = result.state; s.userRadius = '10';
+        s.ipDetectedZip = result.zip; s.ipDetectedCity = result.city;
+        s.ipDetectedState = result.state; s.ipDetectedSource = result.source;
+        s.saveLocationToLocalStorage(s.userZip, s.userCity, s.userState, s.userRadius, false);
+        displayLocation(s.userZip, s.userCity, s.userState, s.userRadius);
+      });
+    } else {
+      displayLocation(s.userZip, s.userCity, s.userState, s.userRadius);
+    }
+
+    const form = document.getElementById('update-location-form');
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const zip  = document.getElementById('zip')?.value.trim();
+        let radius = document.getElementById('search-radius')?.value.trim();
+        const errorMessage = document.querySelector('.w-form-fail');
+        if (!zip) return;
+        if (!radius) radius = '10';
+        const errors = [];
+        if (!/^\d{5}(-\d{4})?$/.test(zip)) errors.push('Invalid ZIP code format. Use 12345 or 12345-6789.');
+        const rNum = Number(radius);
+        if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) errors.push('Invalid radius. Enter a number between 1 and 500.');
+        if (errors.length) {
+          if (errorMessage) { errorMessage.innerText = errors.join('\n'); errorMessage.style.display = 'block'; }
+          return;
+        } else if (errorMessage) { errorMessage.innerText = ''; errorMessage.style.display = 'none'; }
+        try {
+          const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
+          s.userCity  = data.places?.[0]?.['place name']         || '';
+          s.userState = data.places?.[0]?.['state abbreviation'] || '';
+          s.userZip = zip; s.userRadius = radius;
+          s.saveLocationToLocalStorage(s.userZip, s.userCity, s.userState, s.userRadius, true);
+          displayLocation(s.userZip, s.userCity, s.userState, s.userRadius);
+          if (inputField?.value && dosageDropdown?.value && formDropdown?.value) triggerSearch();
+        } catch (err) { console.error('Error fetching ZIP:', err); displayLocation('Error','Error','Error','Error'); }
+      });
+
+      const zipInput = document.getElementById('zip');
+      if (zipInput) {
+        zipInput.addEventListener('input', s.debounce(async () => {
+          const zip    = zipInput.value.trim();
+          let radius   = document.getElementById('search-radius')?.value.trim() || '10';
+          if (!/^\d{5}(-\d{4})?$/.test(zip)) return;
+          const rNum = Number(radius);
+          if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) return;
+          try {
+            const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
+            displayLocation(zip, data.places?.[0]?.['place name']||'', data.places?.[0]?.['state abbreviation']||'', radius);
+          } catch (err) { console.error('ZIP preview failed:', err); }
+        }, 350));
+      }
+    }
+
+    // ---- Recents ----
+    function storeRecentSearch(drugName, details) {
+      let stored = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      const idx = stored.findIndex(it => it.name === drugName);
+      if (idx >= 0) stored[idx] = { name: drugName, details };
+      else { stored.unshift({ name: drugName, details }); if (stored.length > 5) stored.pop(); }
+      localStorage.setItem('recentSearches', JSON.stringify(stored));
+      s.recentSearches = stored;
+    }
+    function storeAndDisplayRecent5Search(drugName, drugDetails) {
+      storeRecentSearch(drugName, drugDetails);
+      displayRecentSearches();
+    }
+    function displayRecentSearches(removeAllOptions = true) {
+  if (!recentSearchesList) return;
+  s.recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+  recentSearchesList.innerHTML = (s.recentSearches || []).map(rs => `
+    <div class="search-item" data-drug="${String(rs.name||'')}" data-details="${encodeURIComponent(JSON.stringify(rs.details||{}))}">
+      ${String(rs.name||'')}<div class="clear-search" data-role="clear">x</div>
+    </div>`).join('');
+  if (!recentSearchesList._delegated) {
+    recentSearchesList.addEventListener('click', async (ev) => {
+      const target = ev.target;
+      const item   = target.closest('.search-item');
+      if (!item) return;
+      if (target.dataset.role === 'clear') {
+        const name = item.dataset.drug;
+        s.recentSearches = (s.recentSearches||[]).filter(rs => rs.name !== name);
+        localStorage.setItem('recentSearches', JSON.stringify(s.recentSearches));
+        displayRecentSearches();
+        return;
+      }
+      const drugName = item.dataset.drug;
+      const details  = JSON.parse(decodeURIComponent(item.getAttribute('data-details') || '{}'));
+      if (window._rxTrack) window._rxTrack.isRecentSearch = true;
+      [...recentSearchesList.querySelectorAll('.search-item')].forEach(i => i.classList.remove('active-search'));
+      item.classList.add('active-search');
+      if (inputField) inputField.value = drugName;
+      if (removeAllOptions) {
+        if (dosageDropdown) { dosageDropdown.innerHTML = '<option value="">Select dosage</option>'; dosageDropdown.disabled = true; }
+        if (formDropdown)   { formDropdown.innerHTML   = '<option value="">Select form</option>';   formDropdown.disabled   = true; }
+      }
+      s.showLoader();
+      const all   = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      const match = all.find(x => x.name === drugName);
+      const qty   = match?.details?.quantity || details.quantity || 30;
+      recentSearchesDataFetch(drugName, { dosages: details.dosages||[], forms: details.forms||[], quantity: qty, overallData: details.overallData||null });
+      const qEl = document.getElementById('selected-quantity'); if (qEl) qEl.textContent = qty;
+    }, { passive: true });
+    recentSearchesList._delegated = true;
+  }
+}
+    function loadRecentSearches() {
+      s.recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      displayRecentSearches();
+    }
+
+    // ---- Typeahead ----
+    if (inputField) inputField.addEventListener('input', s.debounce(async (event) => {
+      const query = (event.target.value || '').trim();
+      if (query.length < 3) { if (suggestionsDiv) suggestionsDiv.innerHTML = ''; return; }
+      const drugs = await s.fetchDrugs(query);
+      s.drugData = drugs;
+      if (!suggestionsDiv) return;
+      suggestionsDiv.innerHTML = '';
+      const unique = new Set();
+      drugs.forEach(drug => {
+        if (unique.has(drug.MedDrugName)) return;
+        unique.add(drug.MedDrugName);
+        const opt = document.createElement('div');
+        opt.className = 'drug-option'; opt.textContent = drug.MedDrugName;
+        opt.addEventListener('click', () => {
+          if (inputField) inputField.value = drug.MedDrugName;
+          s.currentNDC = drug.Ndc;
+          const dSet = new Set(), fSet = new Set();
+          drugs.filter(d => d.MedDrugName === drug.MedDrugName).forEach(row => {
+            dSet.add(`${row.MedStrength} ${row.Uom}`); fSet.add(row.DosageForm);
+          });
+          s.renderDropdown(dosageDropdown, [...dSet]);
+          s.renderDropdown(formDropdown,   [...fSet]);
+          const pack = parseInt(drugs.find(d => d.MedDrugName === drug.MedDrugName)?.MedPackSize) || 30;
+          const q = document.getElementById('quantity'); if (q) q.value = pack;
+          suggestionsDiv.innerHTML = '';
+          triggerSearch();
+        });
+        suggestionsDiv.appendChild(opt);
+      });
+    }, 500));
+
+    // ---- Dropdowns ----
+    function initializeDropdowns() {
+      if (!s.drugData.length) {
+        if (dosageDropdown) { dosageDropdown.innerHTML = '<option value="">Select dosage</option>'; dosageDropdown.disabled = true; }
+        if (formDropdown)   { formDropdown.innerHTML   = '<option value="">Select form</option>';   formDropdown.disabled   = true; }
+        return;
+      }
+      const allForms = new Set(), allDosages = new Set();
+      s.drugData.forEach(d => { allForms.add(d.DosageForm); allDosages.add(`${d.MedStrength} ${d.Uom}`); });
+      s.renderDropdown(formDropdown,   [...allForms]);
+      s.renderDropdown(dosageDropdown, [...allDosages]);
+      const firstForm = [...allForms][0];
+      if (formDropdown && firstForm) { formDropdown.value = firstForm; s.filterDosagesByForm(firstForm); }
+    }
+
+    if (formDropdown)   formDropdown.addEventListener('change',   () => { s.filterDosagesByForm(formDropdown.value,   false); triggerSearch(); });
+    if (dosageDropdown) dosageDropdown.addEventListener('change', () => { s.filterFormsByDosage(dosageDropdown.value, false); triggerSearch(); });
+
+       function triggerSearch() {
+      const drugName       = (inputField?.value || '').trim();
+      const selectedForm   = formDropdown?.value   || '';
+      const selectedDosage = dosageDropdown?.value || '';
+      const qEl            = document.getElementById('quantity');
+      const quantity       = qEl ? parseInt(qEl.value || '30', 10) : 30;
+      if (!drugName || !selectedForm || !selectedDosage) return;
+	  s.showLoader();
+      handleDrugSearch(drugName, selectedDosage, selectedForm, quantity);
+    }
+    s.displayLocation = displayLocation;
+    s.triggerSearch   = triggerSearch;
+
+    // ---- Recents quick fetch ----
+    const recentSearchesDataFetch = async (query, drugDetails) => {
+      try {
+        const drugs = await s.fetchDrugs(query);
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+        s.drugData = drugs;
+        const names = new Set(), dSet = new Set(), fSet = new Set(), qSet = new Set();
+        const stored     = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+        const storedDrug = stored.find(rs => rs.name === query);
+        const storedQty  = storedDrug?.details?.quantity;
+        drugs.forEach(drug => {
+          if (names.has(drug.MedDrugName)) return;
+          names.add(drug.MedDrugName);
+          if (drug.MedDrugName.toLowerCase() === query.toLowerCase()) {
+            s.currentNDC = drug.Ndc;
+            drugs.forEach(row => {
+              if (row.MedDrugName.toLowerCase() === query.toLowerCase() ||
+                 (row.MedDrugName.toLowerCase().startsWith(query.toLowerCase()) && !row.MedDrugName.includes('-'))) {
+                dSet.add(`${row.MedStrength} ${row.Uom}`);
+                fSet.add(row.DosageForm);
+                if (row.Quantity) qSet.add(row.Quantity);
+              }
+            });
+            s.renderDropdown(dosageDropdown, [...dSet], drugDetails.dosages?.[0]);
+            s.renderDropdown(formDropdown,   [...fSet], drugDetails.forms?.[0]);
+            const selectedQty = Math.max(1, parseInt(storedQty || drugDetails.quantity || [...qSet][0] || 30, 10));
+            const qEl = document.getElementById('quantity'); if (qEl) qEl.value = selectedQty;
+            handleDrugSearch(
+              drugDetails?.overallData?.MedDrugName || drug.MedDrugName,
+              drugDetails.dosages?.[0] || `${drug.MedStrength} ${drug.Uom}`,
+              drugDetails.forms?.[0]   || drug.DosageForm,
+              selectedQty
+            );
+          }
+        });
+      } catch (e) {
+        console.error('recentSearchesDataFetch error:', e);
+        const el = document.getElementById('errorMessage'); if (el) el.textContent = 'Failed to fetch drug data.';
+        s.hideLoader();
+      }
+    };
+
+    // ---- Search button ----
+    if (searchBtn) {
+  searchBtn.addEventListener('click', async () => {
+    const drugName = (inputField?.value || '').trim();
+    const dosage   = dosageDropdown?.value || '';
+    const form     = formDropdown?.value   || '';
+    const qEl      = document.getElementById('quantity');
+    const quantity = qEl ? (qEl.value || 30) : 30;
+    const errEl    = document.getElementById('errorMessage');
+    if (!drugName || !quantity || !dosage || !form) { if (errEl) errEl.textContent = 'Please fill in all fields.'; return; }
+    s.showLoader();
+    await handleDrugSearch(drugName, dosage, form, quantity);
+  });
+}
+
+    // ---- Main search ----
+    async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
+  const errEl = document.getElementById('errorMessage');
+  const qEl   = document.getElementById('quantity');
+  quantity = parseInt(qEl?.value || quantity, 10) || 30;
+  s.ensureLocationDefaults();
+  // NO s.showLoader() here
+  await s.paintNextFrame();
+  const t0 = performance.now();
+      try {
+        if (!drugName || !dosage || !form || !Number.isFinite(quantity)) { if (errEl) errEl.textContent = 'Invalid search parameters.'; return; }
+        let selectedDrug = s.drugData.find(d =>
+          d.MedDrugName === drugName && `${d.MedStrength} ${d.Uom}` === dosage && d.DosageForm === form
+        );
+        if (!selectedDrug && s.recentSearches?.length) {
+          const hit = s.recentSearches.find(rs =>
+            rs.details?.overallData?.MedDrugName === drugName &&
+            `${rs.details.overallData.MedStrength} ${rs.details.overallData.Uom}` === dosage &&
+            rs.details.overallData.DosageForm === form
+          );
+          if (hit) selectedDrug = hit.details.overallData;
+        }
+        if (!selectedDrug) { if (errEl) errEl.textContent = 'Drug not found.'; return; }
+        s.selectedDrug = selectedDrug;
+        storeAndDisplayRecent5Search(drugName, { dosages:[dosage], forms:[form], quantity, overallData: selectedDrug });
+        if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+
+        const basePayload = {
+          memberNumber: '01',
+          ndc:          selectedDrug.Ndc,
+          quantity,
+          daysSupply:   3,
+          groupNum:     'TPD001',
+          zip:          s.userZip,
+          radius:       s.userRadius,
+          maxRecords:   800
+        };
+
+        const requests = [s.fetchPharmacies(basePayload)];
+        if (cmsGroupNum) {
+          requests.push(s.fetchPharmacies({ ...basePayload, groupNum: cmsGroupNum, maxRecords: 50 }));
+        }
+        const [allPharmacies, groupPharmacies = null] = await Promise.all(requests);
+
+        if (resultsDiv) resultsDiv.style.display = allPharmacies.length > 0 ? 'block' : 'none';
+        if (!allPharmacies.length) {
+          if (errEl) errEl.textContent = 'No pharmacies found.';
+          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+          return;
+        } else if (errEl) errEl.textContent = '';
+
+        const brandCsv     = "{{wf {&quot;path&quot;:&quot;partner:pharmacy-name-for-rxlogic&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}";
+        const allchainsHide = "{{wf {&quot;path&quot;:&quot;partner:all-chains-hide&quot;,&quot;type&quot;:&quot;Bool&quot;\} }}";
+
+        const withPrice = allPharmacies
+          .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
+          .filter(p => allchainsHide === 'true' ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
+
+        let pinned;
+        if (cmsGroupNum && groupPharmacies) {
+          const groupWithPrice = groupPharmacies
+            .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
+            .filter(p => allchainsHide === 'true' ? p.Pricing?.CostCalculatorRuleName !== 'ALLCHAINS CASH' : true);
+          pinned = s.removeOutliersUsingSD(groupWithPrice).sort((a,b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay));
+        } else {
+          const namePinned = withPrice.filter(p => s.isBrandMatch(p, brandCsv));
+          pinned = s.removeOutliersUsingSD(namePinned).sort((a,b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay));
+        }
+
+        const pinnedNames   = new Set(pinned.map(p => (p.Pharmacy?.Name||'').toUpperCase()));
+        const others        = withPrice.filter(p => !pinnedNames.has((p.Pharmacy?.Name||'').toUpperCase()));
+        const filteredOthers = s.removeOutliersUsingSD(others).sort((a,b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay)).slice(0,9);
+
+        let bestPrice = null, lowestOther = null;
+        if (pinned.length) {
+          bestPrice   = parseFloat(pinned[0].Pricing.PatientPay);
+          lowestOther = filteredOthers.length ? parseFloat(filteredOthers[0].Pricing.PatientPay) : null;
+        }
+
+        if (pharmacyListDiv) {
+          if (pinned.length) {
+            const best = pinned[0];
+            let compareMsg = '';
+            if (lowestOther != null) {
+              const diff = lowestOther - bestPrice;
+              if (bestPrice <= lowestOther && diff > 0) compareMsg = `🔥 Patient Saves $${s.formatNumberWithCommas(diff)}🔥`;
+            }
+            pharmacyListDiv.innerHTML = `
+              <div class="pharmacy-card"
+                   data-pharmacy-name="${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Name))}"
+                   data-price="${s.formatNumberWithCommas(best.Pricing.PatientPay)}"
+                   data-drug-name="${selectedDrug.MedDrugName}"
+                   data-dosage="${dosage}"
+                   data-quantity="${quantity}"
+                   data-form="${form}">
+                <h1 class="price">$${s.formatNumberWithCommas(best.Pricing.PatientPay)}</h1>
+                <h4>${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Name))}</h4>
+                <p>${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Address1||''))} ${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Address2||''))}</p>
+                <p>${s.toTitleCaseWithSpecialRule(best.Pharmacy.City||'')}, ${best.Pharmacy.State||''} ${(best.Pharmacy.Zip||'').substring(0,5)}</p>
+                ${compareMsg ? `<p class="comparative-pricing">${compareMsg}</p>` : ''}
+              </div>`;
+          } else {
+            pharmacyListDiv.innerHTML = `<div class="pharmacy-card"><p>No {{wf {&quot;path&quot;:&quot;partner:name&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }} pharmacies in your area.</p></div>`;
+          }
+        }
+
+        const suggestBtn = document.getElementById('suggest-price-btn');
+        if (suggestBtn) {
+          const pharmacyIsBeaten = pinned.length > 0 && lowestOther !== null && bestPrice !== null && bestPrice > lowestOther;
+          suggestBtn.style.display = pharmacyIsBeaten ? 'block' : 'none';
+          if (pharmacyIsBeaten) {
+            suggestBtn._priceDecreaseContext = {
+              drugName:           selectedDrug.MedDrugName,
+              ndc:                selectedDrug.Ndc,
+              dosage, form, quantity,
+              pinnedPrice:        bestPrice,
+              pinnedPharmacyName: s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(pinned[0].Pharmacy.Name||'')),
+              competitors:        filteredOthers.filter(p => parseFloat(p.Pricing.PatientPay) < bestPrice)
+            };
+          }
+        }
+
+        const listDiv = document.getElementById('filtered-pharmacy-list');
+        const toggle  = document.getElementById('pharmacy-toggle');
+        if (listDiv && toggle) {
+          listDiv.innerHTML = filteredOthers.map(p => {
+            const name  = s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(p.Pharmacy.Name||'Unknown'));
+            const addr1 = s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(p.Pharmacy.Address1||''));
+            const addr2 = s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(p.Pharmacy.Address2||''));
+            const city  = s.toTitleCaseWithSpecialRule(p.Pharmacy.City||'');
+            const state = p.Pharmacy.State||'';
+            const zip   = (p.Pharmacy.Zip||'').substring(0,5);
+            const price = s.formatNumberWithCommas(p.Pricing.PatientPay);
+            return `
+              <div class="pharmacy-card1">
+                <div class="pharmacy-details">
+                  <h4>${name}</h4><p>${addr1} ${addr2}</p><p>${city}, ${state} ${zip}</p>
+                </div>
+                <div class="pharmacy-price"><h1 class="price">$${price}</h1></div>
+              </div>`;
+          }).join('');
+          const autoShow = !pinned.length && filteredOthers.length > 0;
+          toggle.checked = autoShow;
+          listDiv.style.display = autoShow ? 'block' : 'none';
+          toggle.onchange = () => { listDiv.style.display = toggle.checked ? 'block' : 'none'; };
+        }
+
+        const sd1=document.getElementById('selected-drug-name'); if(sd1) sd1.textContent=selectedDrug?.MedDrugName||'Unknown Drug';
+        const sd2=document.getElementById('selected-dosage');    if(sd2) sd2.textContent=dosage||'Unknown Dosage';
+        const sq =document.getElementById('selected-quantity');  if(sq)  sq.textContent =quantity;
+        const sf =document.getElementById('selected-form');      if(sf)  sf.textContent =form||'Unknown Form';
+
+        initializePharmacyCardListeners();
+        showGenericAlternativesBanner(selectedDrug);
+        await s.paintNextFrame(); await s.paintNextFrame();
+      } catch (e) {
+        console.error('handleDrugSearch error:', e);
+        if (errEl) errEl.textContent = 'Something went wrong loading prices.';
+      } finally {
+        console.log('total handleDrugSearch ms:', Math.round(performance.now() - t0));
+        s.hideLoader();
+      }
+    }
+
+    // ---- Generic alternatives banner ----
+    // Fires after the pinned pharmacy renders. RxNorm confirms the typed drug
+    // is a true Brand Name (tty=BN) before showing anything, so generics and
+    // ingredient/salt names never trigger a false banner. Clicking the CTA
+    // repopulates the dosage/form dropdowns, sets quantity from the matched
+    // generic's MedPackSize, and re-runs handleDrugSearch.
+    async function showGenericAlternativesBanner(selectedDrug) {
+      document.getElementById('generic-alt-banner')?.remove();
+      if (!selectedDrug?.MedDrugName || !pharmacyListDiv) return;
+
+      const genericName = await getGenericForBrand(selectedDrug.MedDrugName);
+      if (!genericName) return;
+
+      const genericDrugs = await s.fetchDrugs(genericName);
+      if (!genericDrugs?.length) return;
+
+      // Prefer same strength + form, then progressively fall back.
+      const match =
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength && d.DosageForm === selectedDrug.DosageForm) ||
+        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength) ||
+        genericDrugs.find(d => d.DosageForm  === selectedDrug.DosageForm)  ||
+        genericDrugs[0];
+      if (!match?.MedDrugName) return;
+      const altName = match.MedDrugName;
+
+      if (!document.getElementById('generic-alt-style')) {
+        const style = document.createElement('style');
+        style.id = 'generic-alt-style';
+        style.textContent = '@keyframes genericBannerFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}';
+        document.head.appendChild(style);
+      }
+
+      const banner = document.createElement('div');
+      banner.id = 'generic-alt-banner';
+      banner.style.cssText = [
+        'display:flex','align-items:flex-start','gap:12px',
+        'background:#eaf6f0','border:1.5px solid #2a7a4f','border-radius:12px',
+        'padding:14px 18px','margin-bottom:16px','font-family:inherit',
+        'animation:genericBannerFadeIn 0.35s ease'
+      ].join(';');
+      banner.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2a7a4f"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             style="flex-shrink:0;margin-top:2px">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <circle cx="12" cy="16" r="0.5" fill="#2a7a4f"/>
+        </svg>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:600;color:#1a5c39;margin-bottom:6px;">
+            Generic alternative available
+          </div>
+          <div style="font-size:13px;color:#2c5e45;line-height:1.45;margin-bottom:8px;">
+            <strong>${altName}</strong> is a generic version of
+            <strong>${selectedDrug.MedDrugName}</strong> and may cost significantly less.
+          </div>
+          <button id="generic-alt-btn" style="
+            margin-top:10px;background:#2a7a4f;color:#fff;border:none;
+            border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;
+            cursor:pointer;font-family:inherit;transition:background 0.15s ease;
+          " onmouseover="this.style.background='#225f3d'"
+            onmouseout="this.style.background='#2a7a4f'">
+            Search for ${altName}
+          </button>
+        </div>
+        <button aria-label="Dismiss" style="
+          background:none;border:none;cursor:pointer;padding:0 0 0 4px;
+          color:#2a7a4f;font-size:16px;line-height:1;flex-shrink:0;opacity:0.55;
+        " onclick="document.getElementById('generic-alt-banner').remove()">&#x2715;</button>
+      `;
+
+      pharmacyListDiv.insertAdjacentElement('beforebegin', banner);
+
+      document.getElementById('generic-alt-btn').addEventListener('click', () => {
+        banner.remove();
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+
+        if (inputField) inputField.value = altName;
+        s.drugData    = genericDrugs;
+        s.currentNDC  = match.Ndc;
+
+        const dSet = new Set(), fSet = new Set();
+        genericDrugs
+          .filter(d => d.MedDrugName === altName)
+          .forEach(d => { dSet.add(`${d.MedStrength} ${d.Uom}`); fSet.add(d.DosageForm); });
+        s.renderDropdown(dosageDropdown, [...dSet], `${match.MedStrength} ${match.Uom}`);
+        s.renderDropdown(formDropdown,   [...fSet], match.DosageForm);
+        if (dosageDropdown) dosageDropdown.disabled = false;
+        if (formDropdown)   formDropdown.disabled   = false;
+
+        const packSize = parseInt(match.MedPackSize, 10) || 30;
+        const qEl = document.getElementById('quantity');
+        if (qEl) qEl.value = packSize;
+
+        handleDrugSearch(altName, `${match.MedStrength} ${match.Uom}`, match.DosageForm, packSize);
+      });
+    }
+
+    function initializePharmacyCardListeners() {
+      const cards = document.querySelectorAll('.pharmacy-card');
+      cards.forEach(card => {
+        card.addEventListener('click', (e) => {
+          const sel  = e.currentTarget;
+          const data = sel.dataset;
+          const spn  = document.getElementById('selected-pharmacy-name');
+          const spr  = document.getElementById('selected-price');
+          const spn1 = document.getElementById('selected-pharmacy-name1');
+          const spr1 = document.getElementById('selected-price1');
+          const sdn1 = document.getElementById('selected-drug-name1');
+          const sdd1 = document.getElementById('selected-dosage1');
+          const sq1  = document.getElementById('selected-quantity1');
+          const sf1  = document.getElementById('selected-form1');
+          if(spn)  spn.textContent =data.pharmacyName;
+          if(spr)  spr.textContent =`$${data.price}`;
+          if(spn1) spn1.textContent=data.pharmacyName;
+          if(spr1) spr1.textContent=`$${data.price}`;
+          if(sdn1) sdn1.textContent=data.drugName;
+          if(sdd1) sdd1.textContent=data.dosage;
+          if(sq1)  sq1.textContent =data.quantity;
+          if(sf1)  sf1.textContent =data.form;
+          cards.forEach(c => c.classList.remove('selected'));
+          sel.classList.add('selected');
+        });
+      });
+      if (cards.length) { cards[0].classList.add('selected'); cards[0].click(); }
+    }
+
+    // ---- Price Decrease Modal ----
+    (function(){
+      let _currentPinnedPrice = null, _currentPinnedPharmacyName = null;
+      const $ = id => document.getElementById(id);
+
+      function openModal(context) {
+        const overlay = $('price-decrease-overlay');
+        if (!overlay) return;
+        const pdForm=$('price-decrease-form'), pdError=$('pd-error'), pdCompSec=$('pd-competitor-section'), pdComp=$('pd-competitor');
+        if (pdForm)    pdForm.reset();
+        if (pdError)   pdError.textContent = '';
+        if (pdCompSec) pdCompSec.style.display = 'none';
+        const successOverlay=$('pd-success-overlay'), confettiAnim=$('pd-confetti-anim'), streamerAnim=$('pd-streamer-anim');
+        if (successOverlay) { successOverlay.style.display='none'; successOverlay.style.opacity='0'; }
+        if (confettiAnim) confettiAnim.stop();
+        if (streamerAnim) streamerAnim.stop();
+        const drugNameEl=$('pd-drug-name'), ndcEl=$('pd-ndc');
+        if (drugNameEl) drugNameEl.value = context.drugName||'';
+        if (ndcEl)      ndcEl.value      = context.ndc||'';
+        if (pdComp) {
+          pdComp.innerHTML = '<option value="">Select a pharmacy</option>';
+          (context.competitors||[]).forEach(p => {
+            const opt = document.createElement('option');
+            const name  = s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(p.Pharmacy.Name||''));
+            const price = s.formatNumberWithCommas(p.Pricing.PatientPay);
+            opt.value=name; opt.textContent=`${name} — $${price}`; opt.dataset.price=price;
+            pdComp.appendChild(opt);
+          });
+        }
+        _currentPinnedPrice        = context.pinnedPrice        ?? null;
+        _currentPinnedPharmacyName = context.pinnedPharmacyName ?? null;
+        const modalEl = $('price-decrease-modal');
+        overlay.style.display='flex'; overlay.style.opacity='0';
+        if (modalEl) modalEl.style.transform='scale(0.95)';
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          overlay.style.opacity='1';
+          if (modalEl) modalEl.style.transform='scale(1)';
+        }));
+        document.body.style.overflow='hidden';
+      }
+
+      function closeModal() {
+        const overlay=$('price-decrease-overlay');
+        if (!overlay) return;
+        const modalEl=$('price-decrease-modal');
+        overlay.style.opacity='0';
+        if (modalEl) modalEl.style.transform='scale(0.95)';
+        setTimeout(()=>{ overlay.style.display='none'; }, 300);
+        document.body.style.overflow='';
+      }
+
+      document.addEventListener('click', (e) => {
+        if (e.target.closest('#suggest-price-btn')) {
+          const btn=$('suggest-price-btn'), ctx=btn?._priceDecreaseContext;
+          if (ctx) openModal(ctx);
+          return;
+        }
+        if (e.target.closest('#price-decrease-close') || e.target.closest('#price-decrease-cancel')) { closeModal(); return; }
+        const overlay=$('price-decrease-overlay');
+        if (overlay && e.target===overlay) closeModal();
+      });
+
+      document.addEventListener('change', (e) => {
+        if (e.target.id==='pd-reason') {
+          const pdCompSec=$('pd-competitor-section');
+          if (pdCompSec) pdCompSec.style.display = e.target.value==='better-price' ? 'block' : 'none';
+        }
+      });
+
+      document.addEventListener('submit', async (e) => {
+        if (e.target.id !== 'price-decrease-form') return;
+        e.preventDefault();
+        const pdReason=$('pd-reason'), pdComp=$('pd-competitor'), pdError=$('pd-error');
+        const nursingUnit=$('pd-nursing-unit')?.value.trim();
+        const drugName=$('pd-drug-name')?.value.trim();
+        const ndc=$('pd-ndc')?.value.trim();
+        const reason=pdReason?.value;
+        const competitor=pdComp?.value;
+        const careManager=$('pd-care-manager')?.value.trim();
+        const insurance=document.querySelector('input[name="pd-insurance"]:checked')?.value;
+        const errors=[];
+        if (!reason)    errors.push('Please select a reason for the request.');
+        if (reason==='better-price' && !competitor) errors.push('Please select a competing pharmacy.');
+        if (!insurance) errors.push('Please select an insurance status.');
+        if (pdError) pdError.textContent = errors.join(' ');
+        if (errors.length) return;
+        const selectedCompetitorOption = pdComp?.options[pdComp.selectedIndex];
+        const competitorPrice = (reason==='better-price' && selectedCompetitorOption?.dataset.price) ? `$${selectedCompetitorOption.dataset.price}` : null;
+        const pinnedPharmacyPrice = _currentPinnedPrice != null ? `$${s.formatNumberWithCommas(_currentPinnedPrice)}` : null;
+        const pinnedPharmacyName  = _currentPinnedPharmacyName || null;
+        const submissionPayload = Object.fromEntries(
+          Object.entries({
+            nursingUnit, careManager, insurance, drugName, ndc, reason,
+            pinnedPharmacyName, pinnedPharmacyPrice,
+            ...(reason==='better-price' && competitor      ? { competitor }      : {}),
+            ...(reason==='better-price' && competitorPrice ? { competitorPrice } : {}),
+          }).filter(([,v]) => v != null && v !== '')
+        );
+        try {
+          const res = await fetch('{{wf {&quot;path&quot;:&quot;partner:formspree-endpoint-url&quot;,&quot;type&quot;:&quot;PlainText&quot;\} }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(submissionPayload)
+          });
+          if (res.ok) {
+            const successOverlay=$('pd-success-overlay'), confettiAnim=$('pd-confetti-anim'), streamerAnim=$('pd-streamer-anim');
+            if (confettiAnim) { confettiAnim.seek(0); confettiAnim.play(); }
+            if (streamerAnim) { streamerAnim.seek(0); streamerAnim.play(); }
+            if (successOverlay) {
+              successOverlay.style.display='flex';
+              requestAnimationFrame(()=>requestAnimationFrame(()=>{ successOverlay.style.opacity='1'; }));
+            }
+            setTimeout(()=>{ closeModal(); }, 3000);
+          } else {
+            if (pdError) pdError.textContent = 'Submission failed. Please try again.';
+          }
+        } catch (err) {
+          console.error('Formspree error:', err);
+          if (pdError) pdError.textContent = 'Something went wrong. Please try again.';
+        }
+      });
+    })();
+
+    // ---- Field error clears ----
+    const clearErr=()=>{const e=document.getElementById('errorMessage');if(e)e.textContent='';};
+    if(inputField)     inputField.addEventListener('input',     clearErr);
+    if(dosageDropdown) dosageDropdown.addEventListener('change', clearErr);
+    if(formDropdown)   formDropdown.addEventListener('change',   clearErr);
+
+    loadRecentSearches();
+    initializeDropdowns();
+  });
+})();
+</script>
