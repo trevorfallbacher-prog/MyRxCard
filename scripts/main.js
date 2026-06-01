@@ -2,6 +2,75 @@ const apiKey = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
 const baseUrl = 'https://phoenixapi.rxlogic.com';
 const XANO_BASE = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh';
 
+// ── STATUS BANNER ─────────────────────────────────────────────────
+// Polls status.json from the repo. When active:true, injects a sticky
+// banner at the top of the page. Driven automatically by Checkly via
+// GitHub repository_dispatch → workflow → status.json commit, so the
+// banner appears within ~60s of an outage being detected. Edit
+// status.json directly in GitHub to override manually.
+async function checkStatusBanner() {
+    try {
+        const r = await fetch(
+            'https://raw.githubusercontent.com/trevorfallbacher-prog/myrxcard/main/status.json?t=' + Date.now(),
+            { cache: 'no-store' }
+        );
+        if (!r.ok) return;
+        const status = await r.json();
+        const existing = document.getElementById('site-status-banner');
+
+        if (!status?.active || !status?.message) {
+            if (existing) existing.remove();
+            return;
+        }
+
+        // Banner already showing this exact message — leave it alone
+        if (existing && existing.dataset.message === status.message) return;
+
+        // Swap out stale banner before injecting fresh
+        if (existing) existing.remove();
+
+        if (!document.getElementById('site-status-banner-style')) {
+            const style = document.createElement('style');
+            style.id = 'site-status-banner-style';
+            style.textContent = '@keyframes siteStatusBannerFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}';
+            document.head.appendChild(style);
+        }
+
+        const banner = document.createElement('div');
+        banner.id = 'site-status-banner';
+        banner.dataset.message = status.message;
+        banner.style.cssText = [
+            'position:sticky', 'top:0', 'left:0', 'right:0', 'z-index:9999',
+            'background:#fff4d6', 'border-bottom:1.5px solid #d4a72c',
+            'color:#5a4708', 'padding:10px 16px', 'font-size:14px',
+            'font-family:inherit', 'text-align:center', 'line-height:1.4',
+            'display:flex', 'align-items:center', 'justify-content:center', 'gap:10px',
+            'animation:siteStatusBannerFadeIn 0.3s ease'
+        ].join(';');
+        banner.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d4a72c"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
+                 style="flex-shrink:0">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span></span>
+        `;
+        // textContent (not innerHTML interpolation) so a compromised message can't inject HTML
+        banner.querySelector('span').textContent = status.message;
+
+        const inject = () => document.body && document.body.insertAdjacentElement('afterbegin', banner);
+        if (document.body) inject();
+        else document.addEventListener('DOMContentLoaded', inject, { once: true });
+    } catch (_) {
+        // Silent — banner is non-critical, must never block the app
+    }
+}
+checkStatusBanner();
+setInterval(checkStatusBanner, 2 * 60 * 1000);
+
+
 const inputField = document.getElementById('inputDrugs');
 const suggestionsDiv = document.getElementById('drugSuggestions');
 const dosageDropdown = document.getElementById('dosageDropdown');
