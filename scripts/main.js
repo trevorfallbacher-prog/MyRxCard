@@ -483,36 +483,44 @@ function storeRecentSearch(drugName, drugDetails) {
 const recentSearchesDataFetch = async (query, drugDetails) => {
     isRecentSearch = true;
     showLoader();
-    const drugs = await fetchDrugs(query);
-    suggestionsDiv.innerHTML = '';
-    drugData = drugs;
-    const uniqueDrugNames = new Set(), selectedDrugDosages = new Set(),
-          selectedDrugForms = new Set(), selectedDrugQuantities = new Set();
-    const storedSearches = JSON.parse(localStorage.getItem('recentSearches')) || [];
-    const storedDrug     = storedSearches.find(s => s.name === query);
-    const storedQuantity = storedDrug?.details?.quantity;
-    drugs.forEach((drug) => {
-        if (!uniqueDrugNames.has(drug.MedDrugName)) {
-            uniqueDrugNames.add(drug.MedDrugName);
-            if (drug.MedDrugName.toLowerCase() === query.toLowerCase()) {
-                currentNDC = drug.Ndc;
-                drugs.forEach((d) => {
-                    if (d.MedDrugName.toLowerCase() === query.toLowerCase() ||
-                        (d.MedDrugName.toLowerCase().startsWith(query.toLowerCase()) && !d.MedDrugName.includes('-'))) {
-                        selectedDrugDosages.add(`${d.MedStrength} ${d.Uom}`);
-                        selectedDrugForms.add(d.DosageForm);
-                        if (d.Quantity) selectedDrugQuantities.add(d.Quantity);
-                    }
-                });
-                renderDropdown(dosageDropdown, [...selectedDrugDosages], drugDetails.dosages[0]);
-                renderDropdown(formDropdown,   [...selectedDrugForms],   drugDetails.forms[0]);
-                const selectedQuantity = storedQuantity || drugDetails.Quantity || [...selectedDrugQuantities][0] || 30;
-                document.getElementById('quantity').value = selectedQuantity;
-                updateFieldLock();
-                handleDrugSearch(drugDetails?.overallData?.MedDrugName, drugDetails.dosages[0], drugDetails.forms[0], selectedQuantity);
+    try {
+        const drugs = await fetchDrugs(query);
+        suggestionsDiv.innerHTML = '';
+        drugData = drugs;
+        const selectedDrugDosages = new Set(), selectedDrugForms = new Set(), selectedDrugQuantities = new Set();
+        const storedSearches = JSON.parse(localStorage.getItem('recentSearches')) || [];
+        const storedDrug     = storedSearches.find(s => s.name === query);
+        const storedQuantity = storedDrug?.details?.quantity;
+
+        // Best-effort: rebuild the dosage/form dropdowns from the fresh variants.
+        const canonical = drugs.find(d => d.MedDrugName.toLowerCase() === query.toLowerCase());
+        if (canonical) currentNDC = canonical.Ndc;
+        drugs.forEach((d) => {
+            if (d.MedDrugName.toLowerCase() === query.toLowerCase() ||
+                (d.MedDrugName.toLowerCase().startsWith(query.toLowerCase()) && !d.MedDrugName.includes('-'))) {
+                selectedDrugDosages.add(`${d.MedStrength} ${d.Uom}`);
+                selectedDrugForms.add(d.DosageForm);
+                if (d.Quantity) selectedDrugQuantities.add(d.Quantity);
             }
-        }
-    });
+        });
+        if (selectedDrugDosages.size) renderDropdown(dosageDropdown, [...selectedDrugDosages], drugDetails.dosages[0]);
+        if (selectedDrugForms.size)   renderDropdown(formDropdown,   [...selectedDrugForms],   drugDetails.forms[0]);
+        const selectedQuantity = storedQuantity || drugDetails.quantity || [...selectedDrugQuantities][0] || 30;
+        document.getElementById('quantity').value = selectedQuantity;
+        updateFieldLock();
+
+        // Always run the search from the stored drug details — never gate it on an
+        // exact name match in the fresh results. handleDrugSearch falls back to the
+        // recentSearches record to resolve the drug; gating here is what left the
+        // loader spinning with no pharmacy request for multi-word drug names.
+        await handleDrugSearch(drugDetails?.overallData?.MedDrugName, drugDetails.dosages[0], drugDetails.forms[0], selectedQuantity);
+    } catch (e) {
+        console.error('Recent search failed:', e);
+        const err = document.getElementById('errorMessage');
+        if (err) err.textContent = 'Could not load that recent search.';
+    } finally {
+        hideLoader();
+    }
 };
 
 function displayRecentSearches(removeAllOptions = true) {
