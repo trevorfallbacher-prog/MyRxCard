@@ -9,6 +9,19 @@ const XANO_BASE = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh';
 const DRUG_SEARCH_URL      = `${XANO_BASE}/drug_search`;
 const PHARMACY_PRICING_URL = `${XANO_BASE}/pharmacy_pricing`;
 
+// The pricing group is partner-specific. Webflow renders the partner's groupNum
+// (from the CMS collection item) into the page, and we read it here so each
+// partner's pricing rules are applied. Falls back to TPD001 if the page doesn't
+// supply one. Reads, in order: a window global, then a hidden element's
+// data-group-num attribute or its text content.
+function getGroupNum() {
+    const fromGlobal = (typeof window !== 'undefined' && window.PARTNER_GROUP_NUM) || '';
+    const el = document.getElementById('partner-groupnum');
+    const fromEl = (el && (el.getAttribute('data-group-num') || el.textContent)) || '';
+    const groupNum = String(fromGlobal || fromEl).trim();
+    return groupNum || 'TPD001';
+}
+
 const inputField = document.getElementById('inputDrugs');
 const suggestionsDiv = document.getElementById('drugSuggestions');
 const dosageDropdown = document.getElementById('dosageDropdown');
@@ -978,7 +991,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         ndc:          selectedDrug.Ndc,
         quantity,
         daysSupply:   3,
-        groupNum:     'TPD001',
+        groupNum:     getGroupNum(),
         zip:          userZip,
         radius:       userRadius,
         maxRecords:   3000,
