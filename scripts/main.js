@@ -507,6 +507,7 @@ const recentSearchesDataFetch = async (query, drugDetails) => {
         if (selectedDrugForms.size)   renderDropdown(formDropdown,   [...selectedDrugForms],   drugDetails.forms[0]);
         const selectedQuantity = storedQuantity || drugDetails.quantity || [...selectedDrugQuantities][0] || 30;
         document.getElementById('quantity').value = selectedQuantity;
+        updateDaysSupplyButtons(parseInt(selectedQuantity, 10));
         updateFieldLock();
 
         // Always run the search from the stored drug details — never gate it on an
@@ -582,6 +583,62 @@ function pickBestPackSize(variants) {
     return [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
 }
 
+// ── Days-supply toggle (30-day / 90-day) ─────────────────────────────────────
+// Dispense fees tier by day supply (e.g. Safeway NADAC: ~$12.50 at 30-day, ~$15
+// at 90-day), so the claim must carry a day supply that matches the fill or the
+// price won't match what the pharmacy rings up. We can't see the prescription's
+// sig, so the member picks 30- or 90-day; the buttons set the quantity, and the
+// claim derives daysSupply from that quantity (once-daily assumption).
+function updateDaysSupplyButtons(activeDays) {
+    document.querySelectorAll('#days-supply-toggle .ds-opt').forEach(b => {
+        const on = activeDays != null && parseInt(b.dataset.days, 10) === activeDays;
+        b.style.background  = on ? '#2e6fb5' : '#ffffff';
+        b.style.color       = on ? '#ffffff' : '#41526a';
+        b.style.borderColor = on ? '#2e6fb5' : '#d6dee7';
+    });
+}
+
+function setDaysSupplyTier(days) {
+    const q = document.getElementById('quantity');
+    if (q) q.value = days;
+    updateDaysSupplyButtons(days);
+}
+
+function injectDaysSupplyToggle() {
+    if (document.getElementById('days-supply-toggle')) return;
+    const q = document.getElementById('quantity');
+    if (!q) return;
+
+    const wrap = document.createElement('div');
+    wrap.id = 'days-supply-toggle';
+    wrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin:10px 0 4px;flex-wrap:wrap;font-family:inherit;';
+    wrap.innerHTML =
+        '<span style="font-size:12px;font-weight:600;color:#5b6b7c;letter-spacing:.02em;">Day supply</span>' +
+        '<button type="button" data-days="30" class="ds-opt">30-day</button>' +
+        '<button type="button" data-days="90" class="ds-opt">90-day</button>';
+
+    wrap.querySelectorAll('.ds-opt').forEach(b => {
+        b.style.cssText = 'padding:6px 16px;border-radius:999px;border:1.5px solid #d6dee7;background:#fff;color:#41526a;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,color .15s,border-color .15s;';
+        b.addEventListener('click', () => {
+            setDaysSupplyTier(parseInt(b.dataset.days, 10));
+            triggerSearch();
+        });
+    });
+
+    (q.parentElement || q).insertAdjacentElement('afterend', wrap);
+
+    // Typing a custom quantity means a custom fill — drop the tier highlight.
+    q.addEventListener('input', () => updateDaysSupplyButtons(null));
+
+    updateDaysSupplyButtons(30); // default view: 30-day
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectDaysSupplyToggle);
+} else {
+    injectDaysSupplyToggle();
+}
+
 const triggerInputFieldChange = async (event) => {
     const query = event.target.value.trim();
     if (query.length >= 3) {
@@ -607,9 +664,7 @@ const triggerInputFieldChange = async (event) => {
                     });
                     renderDropdown(dosageDropdown, [...dSet]);
                     renderDropdown(formDropdown,   [...fSet]);
-                    const variants = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
-                    const packSize = pickBestPackSize(variants);
-                    document.getElementById('quantity').value = packSize;
+                    setDaysSupplyTier(30);   // default to a 30-day fill; member can switch to 90-day
                     suggestionsDiv.innerHTML = '';
                     updateFieldLock();
                 });
@@ -968,9 +1023,8 @@ async function showGenericAlternativesBanner(selectedDrug) {
         renderDropdown(dosageDropdown, [...dSet]);
         renderDropdown(formDropdown,   [...fSet]);
 
-        const genVariants = genericDrugs.filter(d => d.MedDrugName === match.MedDrugName);
-        const packSize = pickBestPackSize(genVariants);
-        document.getElementById('quantity').value = packSize;
+        const packSize = 30;          // default to a 30-day fill
+        setDaysSupplyTier(packSize);
         updateFieldLock();
 
         // Run the search immediately — no need to go through the suggestion step
@@ -1068,7 +1122,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         memberNumber: '01',
         ndc:          selectedDrug.Ndc,
         quantity,
-        daysSupply:   3,
+        daysSupply:   quantity,
         groupNum:     getGroupNum(),
         zip:          userZip,
         radius:       userRadius,
