@@ -1035,9 +1035,38 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         return data.filter(p => { const v = parseFloat(p.Pricing?.PatientPay); return v >= mean - multiplier * sd && v <= mean + multiplier * sd; });
     }
 
-    const validPharmacies = pharmacies
-        .filter(p => p.Pricing?.PatientPay != null && p.Pricing.PatientPay !== '')
-        .map(p => ({ ...p, PatientPay: parseFloat(p.Pricing.PatientPay) }));
+    // Strip the junk RxLogic returns before anything reaches the UI:
+    //  • "no price" sentinels (U&C / PASS THROUGH) encoded as 999999.99
+    //  • non-retail providers (urgent care, podiatry, hospitals, infusion…)
+    //    returned under Tier "9999" and flat-priced by blanket cash rules
+    //  • the SAME pharmacy returned more than once — keep one row per NPI
+    //    (lowest tier wins, then lowest price) so a cheap blanket row can't
+    //    mask a pharmacy's real retail price
+    function cleanPharmacyRows(rows) {
+        const NO_PRICE = 100000; // >= this is a 999999.99-style "no price" sentinel
+        const byKey = new Map();
+        for (const r of rows || []) {
+            const pay  = parseFloat(r?.Pricing?.PatientPay);
+            const tier = String(r?.Pharmacy?.Tier ?? '').trim();
+            if (!Number.isFinite(pay) || pay <= 0 || pay >= NO_PRICE) continue;
+            if (tier === '9999' || tier === '')                       continue;
+            if (!r?.Pharmacy?.Name)                                    continue;
+            const key = String(r.Pharmacy.Npi || '').trim() ||
+                        `${r.Pharmacy.Name}|${r.Pharmacy.Address1 || ''}`;
+            const row  = { ...r, PatientPay: pay };
+            const prev = byKey.get(key);
+            if (!prev) { byKey.set(key, row); continue; }
+            const tNew = Number(tier) || 9999;
+            const tOld = Number(prev.Pharmacy?.Tier) || 9999;
+            const keep = tNew < tOld ? row
+                       : tNew > tOld ? prev
+                       : (pay < prev.PatientPay ? row : prev);
+            byKey.set(key, keep);
+        }
+        return [...byKey.values()];
+    }
+
+    const validPharmacies = cleanPharmacyRows(pharmacies);
 
     if (validPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found with valid pricing.';
