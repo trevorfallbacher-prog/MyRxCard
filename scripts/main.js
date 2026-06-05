@@ -978,6 +978,59 @@ async function showGenericAlternativesBanner(selectedDrug) {
     });
 }
 
+// ── Chain collapse ───────────────────────────────────────────────────────────
+// Map a pharmacy name to a chain so multiple locations of the same chain can be
+// shown once (its cheapest location), keeping the 9 result slots varied.
+// Known chains are matched by name; everything else is treated as an independent
+// (keyed by its own name minus the store number, so distinct shops stay separate).
+const PHARMACY_CHAINS = [
+    ['Walgreens',     /\bwalgreens\b/],
+    ['CVS',           /\bcvs\b/],
+    ['Walmart',       /\bwal[\s-]?mart\b/],
+    ['Safeway',       /\bsafeway\b/],
+    ['Albertsons',    /\balbertsons\b/],
+    ['Osco',          /\bosco\b/],
+    ["Fry's",         /\bfry'?s\b/],
+    ['Kroger',        /\bkroger\b/],
+    ["Basha's",       /\bbasha'?s\b/],
+    ['Costco',        /\bcostco\b/],
+    ["Sam's Club",    /\bsam'?s\b/],
+    ['Rite Aid',      /\brite[\s-]?aid\b/],
+    ['Target',        /\btarget\b/],
+    ['Publix',        /\bpublix\b/],
+    ['H-E-B',         /\bh[\s-]?e[\s-]?b\b/],
+    ['Meijer',        /\bmeijer\b/],
+    ['Vons',          /\bvons\b/],
+    ['Hy-Vee',        /\bhy[\s-]?vee\b/],
+    ['Wegmans',       /\bwegmans\b/],
+    ['Giant Eagle',   /\bgiant eagle\b/],
+    ['Harris Teeter', /\bharris teeter\b/],
+    ['Fred Meyer',    /\bfred meyer\b/],
+    ["Smith's",       /\bsmith'?s\b/],
+    ['Kaiser',        /\bkaiser\b/],
+];
+
+function chainKeyFromName(name) {
+    const n = String(name || '').toLowerCase();
+    for (const [, re] of PHARMACY_CHAINS) if (re.test(n)) return re.source;
+    // Independent: dedupe key is the name minus a trailing store number.
+    return n.replace(/#?\s*\d[\d-]*\s*$/, '').replace(/[^a-z0-9]+/g, ' ').trim() || n;
+}
+
+// Collapse rows to one per chain — the cheapest location — and tag each kept
+// row with how many locations of that chain were found nearby.
+function collapseByChain(rows) {
+    const groups = new Map();
+    for (const r of rows) {
+        const key = chainKeyFromName(r.Pharmacy?.Name);
+        const g = groups.get(key);
+        if (!g) { groups.set(key, { best: r, count: 1 }); continue; }
+        g.count += 1;
+        if (r.PatientPay < g.best.PatientPay) g.best = r;
+    }
+    return [...groups.values()].map(g => ({ ...g.best, _chainCount: g.count }));
+}
+
 async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     quantity = parseInt(document.getElementById('quantity').value) || 30;
 
@@ -1074,7 +1127,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         return [...byKey.values()];
     }
 
-    const validPharmacies = cleanPharmacyRows(pharmacies);
+    const validPharmacies = collapseByChain(cleanPharmacyRows(pharmacies));
 
     if (validPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found with valid pricing.';
@@ -1181,6 +1234,12 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
             const formattedName  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy.Name));
             const formattedAddr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy.Address1));
             const formattedAddr2 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy.Address2));
+            const locationsPill  = (pharmacy._chainCount > 1)
+                ? `<div class="chain-pill" style="display:inline-flex;align-items:center;gap:5px;margin-top:9px;padding:3px 10px;border-radius:999px;background:#eef3f8;color:#51677d;font-size:11px;font-weight:600;line-height:1.45;white-space:nowrap;">
+                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="2.5"/></svg>
+                     Lowest of ${pharmacy._chainCount} nearby
+                   </div>`
+                : '';
             return `
                 <div class="pharmacy-card${isFeatured ? ' featured-pharmacy' : ''}"
                      data-npi="${pharmacy.Pharmacy.Npi}"
@@ -1205,6 +1264,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
                     ${pharmacy.Pharmacy.State || 'Unknown State'}
                     ${pharmacy.Pharmacy.Zip ? pharmacy.Pharmacy.Zip.substring(0, 5) : ''}
                   </p>
+                  ${locationsPill}
                 </div>`;
         }).join('');
 
