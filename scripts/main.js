@@ -1356,6 +1356,20 @@ window.onload = function () { console.log('Page fully loaded'); };
 
 loadRecentSearches();
 
+// Global watchdog so the spinner can NEVER run forever — regardless of which
+// code path (early return, thrown error, hung network call, future code)
+// forgot to hide it. showLoader arms it; hideLoader disarms it; if it fires it
+// force-clears every loader and surfaces a retryable error.
+let loaderWatchdog = null;
+const LOADER_MAX_MS = 30000;
+
+function clearLoaders() {
+    const dyn = document.getElementById('dynamic-loader');
+    if (dyn) dyn.remove();
+    const staticLoader = document.getElementById('loader');
+    if (staticLoader) staticLoader.style.display = 'none';
+}
+
 function showLoader() {
     let loader = document.getElementById('dynamic-loader');
     if (!loader) {
@@ -1370,9 +1384,18 @@ function showLoader() {
         document.body.appendChild(loader);
     }
     loader.style.display = 'flex';
+
+    clearTimeout(loaderWatchdog);
+    loaderWatchdog = setTimeout(() => {
+        clearLoaders();
+        const err = document.getElementById('errorMessage');
+        if (err) err.textContent = 'This is taking longer than expected. Please try again.';
+    }, LOADER_MAX_MS);
 }
 
 function hideLoader() {
+    clearTimeout(loaderWatchdog);
+    loaderWatchdog = null;
     const loader = document.getElementById('dynamic-loader');
     if (loader) loader.remove();
 }
