@@ -1,6 +1,13 @@
-const apiKey = 'ececaef7-ef6e-4101-8b44-fbe92360b3a2';
-const baseUrl = 'https://phoenixapi.rxlogic.com';
 const XANO_BASE = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh';
+
+// Drug search and pharmacy pricing are proxied through Xano so the RxLogic API
+// key stays server-side and the browser never makes a cross-origin call to
+// RxLogic directly. The direct browser-to-RxLogic calls were what triggered the
+// CORS failures (custom apiKey header forced a preflight on every request, and
+// RxLogic had to whitelist our origin). Xano talks to RxLogic server-to-server,
+// where CORS does not apply.
+const DRUG_SEARCH_URL      = `${XANO_BASE}/drug_search`;
+const PHARMACY_PRICING_URL = `${XANO_BASE}/pharmacy_pricing`;
 
 const inputField = document.getElementById('inputDrugs');
 const suggestionsDiv = document.getElementById('drugSuggestions');
@@ -390,7 +397,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 async function fetchDrugs(query) {
     try {
-        const response = await fetch(`${baseUrl}/CacheDrugData?name=${query}`, { headers: { apiKey } });
+        const response = await fetch(`${DRUG_SEARCH_URL}?name=${encodeURIComponent(query)}`);
         const data = await response.json();
         return data;
     } catch (error) {
@@ -401,9 +408,9 @@ async function fetchDrugs(query) {
 
 async function fetchPharmacies(payload) {
     try {
-        const response = await fetch(`${baseUrl}/PharmacyRadiusPricing`, {
+        const response = await fetch(PHARMACY_PRICING_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', apiKey },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
         if (!response.ok) {
@@ -1307,7 +1314,7 @@ function hideLoader() {
     if (window.__phoenixFetchPatched) return;
     window.__phoenixFetchPatched = true;
     var origFetch = window.fetch;
-    var apiBase   = (typeof baseUrl === 'string' && baseUrl) || 'https://phoenixapi.rxlogic.com';
+    var apiBase   = (typeof PHARMACY_PRICING_URL === 'string' && PHARMACY_PRICING_URL) || '';
     function writeTTFB(ms) { var box = document.getElementById('ttfb'); if (box) box.textContent = ms + 'ms'; }
     window.fetch = async function (input, init) {
         init = init || {};
