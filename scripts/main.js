@@ -408,11 +408,25 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
+// Normalize whatever the proxy returns into a plain array. Tolerates a bare
+// array, a Xano transport envelope ({ response: { result } }), a { result }
+// or { Response } wrapper, or an error/empty object — anything non-array
+// becomes [] so callers can always safely .forEach/.filter/.map.
+function asArray(data) {
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === 'object') {
+        if (Array.isArray(data.result)) return data.result;
+        if (Array.isArray(data.Response)) return data.Response;
+        if (data.response) return asArray(data.response.result ?? data.response);
+    }
+    return [];
+}
+
 async function fetchDrugs(query) {
     try {
         const response = await fetch(`${DRUG_SEARCH_URL}?name=${encodeURIComponent(query)}`);
         const data = await response.json();
-        return data;
+        return asArray(data);
     } catch (error) {
         console.error('Error fetching drugs:', error);
         return [];
@@ -435,7 +449,10 @@ async function fetchPharmacies(payload) {
         }
         const data = await response.json();
         document.getElementById('loader').style.display = 'none';
-        return data.Response || [];
+        // Pricing result is normally { Response: [...] }; unwrap a transport
+        // envelope if one slips through, and always hand back an array.
+        const result = (data && data.response && data.response.result) ? data.response.result : data;
+        return asArray(result?.Response ?? result);
     } catch (error) {
         document.getElementById('loader').style.display = 'none';
         console.error('Error fetching pharmacies:', error);
