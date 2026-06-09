@@ -484,36 +484,56 @@ const recentSearchesDataFetch = async (query, drugDetails) => {
     isRecentSearch = true;
     showLoader();
     try {
-        const drugs = await fetchDrugs(query);
+        const q = String(query).trim();
+        // The stored query is the full drug name (e.g. "Citalopram Hydrobromide").
+        // Searching the full multi-word name can return little/nothing, which left
+        // the dosage/form dropdowns empty and the fields locked. Search by the first
+        // word (ingredient/brand root) — the same result set a typed search gets —
+        // then scope to this exact drug so the variants populate and stay editable.
+        const broad = q.split(/\s+/)[0];
+        let drugs = await fetchDrugs(broad.length >= 3 ? broad : q);
+        if (!drugs.length && broad.toLowerCase() !== q.toLowerCase()) drugs = await fetchDrugs(q);
+
         suggestionsDiv.innerHTML = '';
-        drugData = drugs;
-        const selectedDrugDosages = new Set(), selectedDrugForms = new Set(), selectedDrugQuantities = new Set();
+
+        const variants = drugs.filter(d => String(d.MedDrugName || '').toLowerCase() === q.toLowerCase());
         const storedSearches = JSON.parse(localStorage.getItem('recentSearches')) || [];
         const storedDrug     = storedSearches.find(s => s.name === query);
         const storedQuantity = storedDrug?.details?.quantity;
 
-        // Best-effort: rebuild the dosage/form dropdowns from the fresh variants.
-        const canonical = drugs.find(d => d.MedDrugName.toLowerCase() === query.toLowerCase());
-        if (canonical) currentNDC = canonical.Ndc;
-        drugs.forEach((d) => {
-            if (d.MedDrugName.toLowerCase() === query.toLowerCase() ||
-                (d.MedDrugName.toLowerCase().startsWith(query.toLowerCase()) && !d.MedDrugName.includes('-'))) {
-                selectedDrugDosages.add(`${d.MedStrength} ${d.Uom}`);
-                selectedDrugForms.add(d.DosageForm);
-                if (d.Quantity) selectedDrugQuantities.add(d.Quantity);
-            }
-        });
-        if (selectedDrugDosages.size) renderDropdown(dosageDropdown, [...selectedDrugDosages], drugDetails.dosages[0]);
-        if (selectedDrugForms.size)   renderDropdown(formDropdown,   [...selectedDrugForms],   drugDetails.forms[0]);
-        const selectedQuantity = storedQuantity || drugDetails.quantity || [...selectedDrugQuantities][0] || 30;
-        document.getElementById('quantity').value = selectedQuantity;
+        if (variants.length) {
+            // Scope drugData to this drug so the dropdowns and the change-filters
+            // only show its strengths/forms — and stay fully editable.
+            drugData = variants;
+            currentNDC = variants[0].Ndc;
+            const dosages = new Set(), forms = new Set(), qtys = new Set();
+            variants.forEach(d => {
+                dosages.add(`${d.MedStrength} ${d.Uom}`);
+                forms.add(d.DosageForm);
+                if (d.Quantity) qtys.add(d.Quantity);
+            });
+            renderDropdown(dosageDropdown, [...dosages], drugDetails.dosages?.[0]);
+            renderDropdown(formDropdown,   [...forms],   drugDetails.forms?.[0]);
+            document.getElementById('quantity').value = storedQuantity || drugDetails.quantity || [...qtys][0] || 30;
+        } else {
+            // Fallback: couldn't fetch variants — keep the stored selection visible
+            // and seed drugData from it so nothing locks up.
+            drugData = drugs.length ? drugs : [drugDetails.overallData].filter(Boolean);
+            if (drugDetails.dosages?.length) renderDropdown(dosageDropdown, drugDetails.dosages, drugDetails.dosages[0]);
+            if (drugDetails.forms?.length)   renderDropdown(formDropdown,   drugDetails.forms,   drugDetails.forms[0]);
+            document.getElementById('quantity').value = storedQuantity || drugDetails.quantity || 30;
+        }
+
         updateFieldLock();
 
-        // Always run the search from the stored drug details — never gate it on an
-        // exact name match in the fresh results. handleDrugSearch falls back to the
-        // recentSearches record to resolve the drug; gating here is what left the
-        // loader spinning with no pharmacy request for multi-word drug names.
-        await handleDrugSearch(drugDetails?.overallData?.MedDrugName, drugDetails.dosages[0], drugDetails.forms[0], selectedQuantity);
+        // Run the search from the stored details (handleDrugSearch also falls back to
+        // the recentSearches record to resolve the drug).
+        await handleDrugSearch(
+            drugDetails?.overallData?.MedDrugName,
+            drugDetails.dosages?.[0],
+            drugDetails.forms?.[0],
+            document.getElementById('quantity').value
+        );
     } catch (e) {
         console.error('Recent search failed:', e);
         const err = document.getElementById('errorMessage');
