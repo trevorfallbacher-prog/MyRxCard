@@ -1477,7 +1477,9 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 // the remaining pharmacies in #filtered-pharmacy-list, and wire the toggle.
 // Structure matches the pages' existing CSS (.pharmacy-card / .pharmacy-card1).
 function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
-    const pinnedBox = document.getElementById('pharmacyList');
+    // The pinned card lives in #pinnedPharmacyList on /s/ pages and #pharmacyList
+    // on /p/ pages — target whichever exists, preferring the dedicated pinned box.
+    const pinnedBox = document.getElementById('pinnedPharmacyList') || document.getElementById('pharmacyList');
     if (pinnedBox) {
         if (featured.length) {
             const pinnedPrice = parseFloat(featured[0].Pricing?.PatientPay);
