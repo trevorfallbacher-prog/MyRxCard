@@ -158,16 +158,26 @@ async function updateSearchRecord(data) {
 }
 
 window.addEventListener('beforeunload', () => {
-    if (currentSearchRecordId && !hasPrinted) {
+    // With rxTrack the current row id lives there, not in currentSearchRecordId
+    // (which only the legacy fallback sets) — read whichever is populated.
+    const _rid = (window.rxTrack && window.rxTrack.recordId && window.rxTrack.recordId()) || currentSearchRecordId;
+    if (_rid && !hasPrinted) {
         const payload = JSON.stringify({
             session_duration_seconds: getSessionDuration(),
             session_start: SESSION_START.toISOString(),
             abandoned: true
         });
-        navigator.sendBeacon(
-            `${XANO_BASE}/search_events/${currentSearchRecordId}`,
-            new Blob([payload], { type: 'application/json' })
-        );
+        // NOT sendBeacon: beacons always POST, and POST /search_events/{id} is a
+        // 404 in Xano (the row route is PATCH) — so the old beacon never landed.
+        // keepalive lets this PATCH finish across the unload.
+        try {
+            fetch(`${XANO_BASE}/search_events/${_rid}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: true
+            });
+        } catch (e) {}
     }
 });
 
