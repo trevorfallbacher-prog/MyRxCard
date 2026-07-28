@@ -50,7 +50,7 @@ const recentSearchesList = document.getElementById('recentSearchesList');
 const isFirstLoading = true;
 const resultsDiv = document.getElementById('results-div');
 
-if (isFirstLoading) {
+if (isFirstLoading && resultsDiv) {
     resultsDiv.style.display = 'none';
 }
 
@@ -271,18 +271,43 @@ async function detectByBrowser() {
     });
 }
 
-async function detectByIp() {
+// Fetch JSON but never hang: abort after `ms` so a throttled/stalled endpoint
+// can't freeze location detection forever.
+async function fetchJsonWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
     try {
-        const loc = await (await fetch('https://ipapi.co/json/')).json();
-        return {
-            zip:    loc.postal      || '00000',
-            city:   loc.city        || 'Default City',
-            state:  loc.region_code || loc.region || 'Default State',
-            source: 'ip'
-        };
-    } catch (e) {
-        return { zip: '00000', city: 'Default City', state: 'Default State', source: 'fallback' };
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.json();
+    } finally {
+        clearTimeout(t);
     }
+}
+
+async function detectByIp() {
+    // Try providers in order; each capped at 4s. ipapi.co's free tier stalls
+    // under load (the old no-timeout call is what hung "Detecting location…"),
+    // so ipwho.is is a fallback before we give up to a default ZIP.
+    const providers = [
+        'https://ipwho.is/',
+        'https://ipapi.co/json/'
+    ];
+    for (const url of providers) {
+        try {
+            const loc = await fetchJsonWithTimeout(url, 4000);
+            const zip = loc.postal || loc.zip;
+            if (zip) {
+                return {
+                    zip,
+                    city:  loc.city        || 'Default City',
+                    state: loc.region_code || loc.region || 'Default State',
+                    source: 'ip'
+                };
+            }
+        } catch (e) { /* try next provider */ }
+    }
+    return { zip: '00000', city: 'Default City', state: 'Default State', source: 'fallback' };
 }
 
 async function detectLocation() {
