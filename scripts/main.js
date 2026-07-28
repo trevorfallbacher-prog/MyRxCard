@@ -1207,18 +1207,31 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     showLoader();
     pharmacyListDiv.innerHTML = '';
 
-    const payload = {
+    // TPD001 is the general network that carries the broad pharmacy list, so it
+    // is ALWAYS queried — it populates the "other options". A partner group is
+    // a SECOND, narrow query (pharmacy pages only) used to price/feature the
+    // partner's own pharmacies. main.js previously ran only the partner-group
+    // query, so a thin partner group left the page with no other options.
+    const GENERAL_GROUP   = 'TPD001';
+    const configuredGroup = getGroupNum();
+    const usePartnerGroup = PAGE_TYPE === 'pharmacy'
+        && configuredGroup && configuredGroup.toUpperCase() !== GENERAL_GROUP;
+
+    const basePayload = {
         memberNumber: '01',
         ndc:          selectedDrug.Ndc,
         quantity,
         daysSupply:   selectedDaysSupply,
-        groupNum:     getGroupNum(),
         zip:          userZip,
         radius:       userRadius,
-        maxRecords:   3000,
     };
 
-    const pharmacies = await fetchPharmacies(payload);
+    const requests = [ fetchPharmacies({ ...basePayload, groupNum: GENERAL_GROUP, maxRecords: 3000 }) ];
+    if (usePartnerGroup) requests.push(
+        fetchPharmacies({ ...basePayload, groupNum: configuredGroup, maxRecords: 50 })
+    );
+    const [pharmacies, partnerRaw = null] = await Promise.all(requests);
+
     document.getElementById('loader').style.display = 'none';
     resultsDiv.style.display = pharmacies.length > 0 ? 'block' : 'none';
 
@@ -1286,13 +1299,24 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         pharmacyListDiv.innerHTML = ''; return;
     }
 
+    // Partner-group pool (pharmacy pages) — cleaned & sorted; these are the
+    // partner's own pharmacies at their contracted price, used for the pin.
+    let partnerPharmacies = null;
+    if (partnerRaw && partnerRaw.length) {
+        const pv = collapseByChain(cleanPharmacyRows(partnerRaw));
+        partnerPharmacies = removeOutliersUsingSD(pv, 1.5).sort((a, b) => a.PatientPay - b.PatientPay);
+    }
+
     // Which pharmacies get "featured" depends on the micropage:
-    //  • pharmacy pages feature the partner's own branded pharmacies
+    //  • pharmacy pages pin the partner's own pharmacies — from the partner-
+    //    group query when present, else brand-CSV match as a fallback
     //  • group pages feature the lowest Tier-1 pharmacy per pricing group
     let featuredPharmacies = [];
     let multipleGroupsPresent = false;
 
-    if (PAGE_TYPE === 'pharmacy' && PARTNER_BRAND_CSV) {
+    if (PAGE_TYPE === 'pharmacy' && partnerPharmacies && partnerPharmacies.length) {
+        featuredPharmacies = partnerPharmacies.slice(0, 3);
+    } else if (PAGE_TYPE === 'pharmacy' && PARTNER_BRAND_CSV) {
         featuredPharmacies = filteredPharmacies.filter(p => isBrandMatch(p, PARTNER_BRAND_CSV)).slice(0, 3);
     } else {
         const tier1        = filteredPharmacies.filter(p => p.Pharmacy?.Tier === '1');
