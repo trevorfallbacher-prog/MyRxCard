@@ -1414,6 +1414,17 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     isRecentSearch = false;
 
+    // Pharmacy-branded pages (Brookshire, Rochester, /p/) use a two-container
+    // layout: a pinned box (#pharmacyList) for the partner's own pharmacy and a
+    // toggled "other pharmacies" list (#filtered-pharmacy-list). Render into
+    // both when that layout is present; otherwise fall back to the single
+    // combined list (group pages).
+    const _othersBox   = document.getElementById('filtered-pharmacy-list');
+    const _pharmToggle = document.getElementById('pharmacy-toggle');
+    if (PAGE_TYPE === 'pharmacy' && _othersBox && _pharmToggle) {
+        renderPharmacyPinnedLayout(featuredPharmacies, regularPharmacies, _othersBox, _pharmToggle,
+            { drugName: resolvedDrugName, dosage: resolvedDosage, form: resolvedForm, quantity });
+    } else {
     pharmacyListDiv.innerHTML = displayPharmacies
         .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
         .map((pharmacy, index) => {
@@ -1455,9 +1466,71 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
                   ${locationsPill}
                 </div>`;
         }).join('');
+    }
 
     initializePharmacyCardListeners();
     showGenericAlternativesBanner(selectedDrug);
+}
+
+// Render the branded pharmacy layout: the partner's pinned pharmacy in the
+// #pharmacyList box (with a "Patient Saves $X" callout vs the cheapest other),
+// the remaining pharmacies in #filtered-pharmacy-list, and wire the toggle.
+// Structure matches the pages' existing CSS (.pharmacy-card / .pharmacy-card1).
+function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
+    const pinnedBox = document.getElementById('pharmacyList');
+    if (pinnedBox) {
+        if (featured.length) {
+            const pinnedPrice = parseFloat(featured[0].Pricing?.PatientPay);
+            const lowestOther = others.length ? parseFloat(others[0].Pricing?.PatientPay) : null;
+            let compareMsg = '';
+            if (lowestOther != null && Number.isFinite(pinnedPrice)) {
+                const diff = lowestOther - pinnedPrice;
+                if (pinnedPrice <= lowestOther && diff > 0) compareMsg = `🔥 Patient Saves $${formatNumberWithCommas(diff)} 🔥`;
+            }
+            pinnedBox.innerHTML = featured.map((best, i) => {
+                const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Name || ''));
+                const price = formatNumberWithCommas(best.Pricing?.PatientPay);
+                const addr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Address1 || ''));
+                const addr2 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Address2 || ''));
+                const city  = toTitleCaseWithSpecialRule(best.Pharmacy?.City || '');
+                const state = best.Pharmacy?.State || '';
+                const zip   = (best.Pharmacy?.Zip || '').substring(0, 5);
+                return `
+                    <div class="pharmacy-card" data-npi="${best.Pharmacy?.Npi || ''}"
+                         data-pharmacy-name="${name}" data-price="${price}"
+                         data-drug-name="${meta.drugName}" data-dosage="${meta.dosage}"
+                         data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="${i}">
+                      <h1 class="price">$${price}</h1>
+                      <h4>${name}</h4>
+                      <p>${addr1} ${addr2}</p>
+                      <p>${city}, ${state} ${zip}</p>
+                      ${i === 0 && compareMsg ? `<p class="comparative-pricing">${compareMsg}</p>` : ''}
+                    </div>`;
+            }).join('');
+        } else {
+            pinnedBox.innerHTML = `<div class="pharmacy-card"><p>No pharmacies found in your area.</p></div>`;
+        }
+    }
+
+    othersBox.innerHTML = others.slice(0, 9).map(p => {
+        const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Name || 'Unknown'));
+        const addr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Address1 || ''));
+        const addr2 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Address2 || ''));
+        const city  = toTitleCaseWithSpecialRule(p.Pharmacy?.City || '');
+        const state = p.Pharmacy?.State || '';
+        const zip   = (p.Pharmacy?.Zip || '').substring(0, 5);
+        const price = formatNumberWithCommas(p.Pricing?.PatientPay);
+        return `
+            <div class="pharmacy-card1">
+              <div class="pharmacy-details"><h4>${name}</h4><p>${addr1} ${addr2}</p><p>${city}, ${state} ${zip}</p></div>
+              <div class="pharmacy-price"><h1 class="price">$${price}</h1></div>
+            </div>`;
+    }).join('');
+
+    const autoShow = !featured.length && others.length > 0;
+    toggle.checked = autoShow;
+    othersBox.style.display = autoShow ? 'block' : 'none';
+    toggle.onchange = () => { othersBox.style.display = toggle.checked ? 'block' : 'none'; };
 }
 
 function initializePharmacyCardListeners() {
