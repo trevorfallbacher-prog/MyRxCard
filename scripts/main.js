@@ -1239,7 +1239,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     const requests = [ fetchPharmacies({ ...basePayload, groupNum: GENERAL_GROUP, maxRecords: 3000 }) ];
     if (usePartnerGroup) requests.push(
-        fetchPharmacies({ ...basePayload, groupNum: configuredGroup, maxRecords: 50 })
+        fetchPharmacies({ ...basePayload, groupNum: configuredGroup, maxRecords: 800 })
     );
     const [pharmacies, partnerRaw = null] = await Promise.all(requests);
 
@@ -1318,33 +1318,33 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         partnerPharmacies = removeOutliersUsingSD(pv, 1.5).sort((a, b) => a.PatientPay - b.PatientPay);
     }
 
-    // Which pharmacies get "featured" depends on the micropage:
-    //  • pharmacy pages pin the partner's own pharmacies — from the partner-
-    //    group query when present, else brand-CSV match as a fallback
-    //  • group pages feature the lowest Tier-1 pharmacy per pricing group
+    // Feature the cheapest Tier-1 pharmacy per pricing group. The pool depends
+    // on the page: pharmacy pages feature from the partner-group query — the
+    // partner's own pharmacies come back as Tier 1, so Tier-1 filtering is what
+    // keeps a Rochester (RRH) search from pinning a Brookshire store just
+    // because it was the cheapest thing nearby. Group pages feature from the
+    // general TPD001 list. Never take "cheapest of all" — always Tier 1.
     let featuredPharmacies = [];
     let multipleGroupsPresent = false;
 
-    if (PAGE_TYPE === 'pharmacy' && partnerPharmacies && partnerPharmacies.length) {
-        featuredPharmacies = partnerPharmacies.slice(0, 3);
-    } else if (PAGE_TYPE === 'pharmacy' && PARTNER_BRAND_CSV) {
-        featuredPharmacies = filteredPharmacies.filter(p => isBrandMatch(p, PARTNER_BRAND_CSV)).slice(0, 3);
-    } else {
-        const tier1        = filteredPharmacies.filter(p => p.Pharmacy?.Tier === '1');
-        const uniqueGroups = new Set(tier1.map(p => p.Pricing?.CostCalculatorRuleName || 'UNKNOWN'));
-        multipleGroupsPresent = uniqueGroups.size > 1;
-        const seenGroups   = new Set();
-        for (const pharmacy of filteredPharmacies) {
-            if (pharmacy.Pharmacy?.Tier === '1') {
-                const group = pharmacy.Pricing?.CostCalculatorRuleName || 'UNKNOWN';
-                if (multipleGroupsPresent) {
-                    if (!seenGroups.has(group)) { seenGroups.add(group); featuredPharmacies.push(pharmacy); }
-                } else {
-                    featuredPharmacies.push(pharmacy);
-                }
+    const featuredPool = (PAGE_TYPE === 'pharmacy' && partnerPharmacies && partnerPharmacies.length)
+        ? partnerPharmacies
+        : filteredPharmacies;
+
+    const tier1        = featuredPool.filter(p => p.Pharmacy?.Tier === '1');
+    const uniqueGroups = new Set(tier1.map(p => p.Pricing?.CostCalculatorRuleName || 'UNKNOWN'));
+    multipleGroupsPresent = uniqueGroups.size > 1;
+    const seenGroups   = new Set();
+    for (const pharmacy of featuredPool) {
+        if (pharmacy.Pharmacy?.Tier === '1') {
+            const group = pharmacy.Pricing?.CostCalculatorRuleName || 'UNKNOWN';
+            if (multipleGroupsPresent) {
+                if (!seenGroups.has(group)) { seenGroups.add(group); featuredPharmacies.push(pharmacy); }
+            } else {
+                featuredPharmacies.push(pharmacy);
             }
-            if (featuredPharmacies.length === 3) break;
         }
+        if (featuredPharmacies.length === 3) break;
     }
 
     const featuredNpiSet    = new Set(featuredPharmacies.map(p => p.Pharmacy?.Npi));
