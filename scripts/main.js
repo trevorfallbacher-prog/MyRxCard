@@ -1683,13 +1683,17 @@ function formatNumberWithCommas(num) {
     return parseFloat(num).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// Both helpers coerce their input: pharmacy records sometimes carry a null
+// Address1/Address2, and an unguarded null here threw inside the card-render
+// map, killing the ENTIRE results list (searches "worked" but rendered nothing).
 function trimLastWordIfEndsWithNumber(str) {
+    str = String(str ?? '');
     const match = str.match(/(#?\d+)$/);
     return match ? str.replace(match[0], '').trim() : str.trim();
 }
 
 function toTitleCaseWithSpecialRule(str) {
-    return str.split(' ').map(word =>
+    return String(str ?? '').split(' ').map(word =>
         word.length > 1 ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : word.toUpperCase()
     ).join(' ');
 }
