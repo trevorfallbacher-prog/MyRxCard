@@ -129,8 +129,9 @@ const SOURCE_DOMAIN = window.location.hostname;
 const SOURCE_PATH   = window.location.pathname;
 
 async function trackSearch(data) {
-    // Prefer the shared session tracker: one row per session, create-or-patch.
-    if (window.rxTrack) { hasPrinted = false; window.rxTrack.log(data); return; }
+    // Every search (incl. radius/pricing re-fires) is its OWN new row; print and
+    // card-save later PATCH this row. newRow:true forces a fresh insert.
+    if (window.rxTrack) { hasPrinted = false; window.rxTrack.log(data, { newRow: true }); return; }
     // Fallback (rxtrack.js not loaded): legacy one-row-per-search behavior.
     try {
         const response = await fetch(`${XANO_BASE}/search_events`, {

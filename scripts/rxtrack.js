@@ -53,16 +53,14 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
-  // ---- session row id (localStorage, sliding 30-min window) -----------------
-  function recordId() {
-    var id = ls('rx_record_id');
-    var t  = parseInt(ls('rx_record_ts') || '0', 10);
-    if (!id) return null;
-    if (Date.now() - t > SESSION_WINDOW) return null; // stale -> next action starts a new row
-    return id;
-  }
-  function setRecordId(id) { lsSet('rx_record_id', String(id)); touch(); }
-  function touch()         { lsSet('rx_record_ts', String(Date.now())); }
+  // ---- current search row id: IN MEMORY, per page load ----------------------
+  // Deliberately NOT persisted. Every fresh (static) page load starts with no
+  // current row, so a print/save can only attach to a search made on THIS load,
+  // never one carried over from a previous page view.
+  var _recordId = null;
+  function recordId()      { return _recordId; }
+  function setRecordId(id) { _recordId = id ? String(id) : null; }
+  function touch()         { /* no-op: id is page-load scoped, nothing to refresh */ }
 
   // Base fields written when the row is first created.
   function baseFields() {
@@ -89,12 +87,17 @@
   // ---- the core: create-or-PATCH the session row ----------------------------
   // opts.nav = true  -> caller is about to navigate away (Apple badge); use a
   //                     transport that survives unload.
+  // opts.newRow = true  -> always create a fresh row (used by every drug search;
+  //                        we want each search tracked separately).
+  // default (no newRow)  -> PATCH the CURRENT search row (used by print / card
+  //                        save). Only if there's no current row at all (card
+  //                        saved with no prior search) do we create one.
   function log(fields, opts) {
     opts = opts || {};
     var id = recordId();
 
-    if (id) {
-      // PATCH the existing session row with just the delta.
+    if (!opts.newRow && id) {
+      // PATCH the current search row with just the delta (print/save).
       // PATCH is a non-simple method (needs CORS preflight); keepalive lets it
       // finish across an unload, and the Apple handler delays nav to be safe.
       touch();
