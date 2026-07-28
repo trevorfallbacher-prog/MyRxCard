@@ -58,7 +58,10 @@ let drugData = [];
 
 // Lock dosage/form/quantity/search until a prescription is selected
 const quantityField = document.getElementById('quantity');
-const searchButton  = document.getElementById('searchButton');
+const searchButton  = document.getElementById('searchButton')
+    || document.getElementById('search-button')
+    || document.getElementById('searchButton1')
+    || document.getElementById('search-btn');
 const lockableFields = [dosageDropdown, formDropdown, quantityField, searchButton];
 
 function updateFieldLock() {
@@ -904,17 +907,25 @@ dosageDropdown.addEventListener('change', () => filterFormsByDosage(dosageDropdo
 
 initializeDropdowns();
 
-document.getElementById('searchButton').addEventListener('click', async () => {
+const _rxSearchHandler = async () => {
     isRecentSearch = false;
     const drugName = inputField.value.trim();
     const dosage   = dosageDropdown.value;
     const form     = formDropdown.value;
     const quantity = document.getElementById('quantity').value || 30;
     if (!drugName || !quantity || !dosage || !form) {
-        document.getElementById('errorMessage').textContent = 'Please fill in all fields.';
+        const em = document.getElementById('errorMessage');
+        if (em) em.textContent = 'Please fill in all fields.';
         return;
     }
     await handleDrugSearch(drugName, dosage, form, quantity);
+};
+// Bind to whatever id the page gave its search button — templates vary
+// (searchButton / search-button / searchButton1 / search-btn). Binding to a
+// missing id used to throw here and halt the rest of main.js.
+['searchButton', 'search-button', 'searchButton1', 'search-btn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', _rxSearchHandler);
 });
 
 // --- Star animation ---
