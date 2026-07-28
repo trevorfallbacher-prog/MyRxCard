@@ -52,22 +52,31 @@
     if (lastFire.platform === platform && now - lastFire.t < 400) return;
     lastFire = { platform: platform, t: now };
 
-    var payload = JSON.stringify({
-      event_type:    'wallet_save',
-      platform:      platform,
-      session_id:    sessionId(),
-      source_url:    location.href,
-      source_domain: location.hostname,
-      source_path:   location.pathname,
-      partner_slug:  partnerSlug(),
-      device_type:   DEVICE,
-      browser:       BROWSER
-    });
+    // Send FORM-ENCODED, not JSON. An application/x-www-form-urlencoded body is
+    // a CORS-"simple" request, so it fires with no preflight and survives the
+    // same-tab navigation the Apple badge triggers. A JSON beacon needs a CORS
+    // preflight, which the browser drops mid-navigation — so those saves never
+    // landed. Xano parses form fields the same as JSON.
+    var params = new URLSearchParams();
+    params.set('event_type',    'wallet_save');
+    params.set('platform',      platform);
+    params.set('session_id',    sessionId());
+    params.set('source_url',    location.href);
+    params.set('source_domain', location.hostname);
+    params.set('source_path',   location.pathname);
+    params.set('partner_slug',  partnerSlug());
+    params.set('device_type',   DEVICE);
+    params.set('browser',       BROWSER);
     try {
       if (navigator.sendBeacon) {
-        navigator.sendBeacon(XANO, new Blob([payload], { type: 'application/json' }));
+        navigator.sendBeacon(XANO, params);
       } else {
-        fetch(XANO, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true });
+        fetch(XANO, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+          keepalive: true
+        });
       }
     } catch (e) {}
   }
