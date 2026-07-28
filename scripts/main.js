@@ -1219,14 +1219,14 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     pharmacyListDiv.innerHTML = '';
 
     // TPD001 is the general network that carries the broad pharmacy list, so it
-    // is ALWAYS queried — it populates the "other options". A partner group is
-    // a SECOND, narrow query (pharmacy pages only) used to price/feature the
-    // partner's own pharmacies. main.js previously ran only the partner-group
-    // query, so a thin partner group left the page with no other options.
+    // is ALWAYS queried — it populates the "other options". Whenever a partner
+    // group is configured (group OR pharmacy pages), it is queried too: its
+    // Tier-1 rows are the partner's OWN pharmacies, and THAT — never TPD001 — is
+    // what feeds the pin/featured slot. RRH@Rochester returns the 4 Rochester
+    // pharmacies as Tier-1; RRH@Lufkin returns 0 (so no pin there).
     const GENERAL_GROUP   = 'TPD001';
     const configuredGroup = getGroupNum();
-    const usePartnerGroup = PAGE_TYPE === 'pharmacy'
-        && configuredGroup && configuredGroup.toUpperCase() !== GENERAL_GROUP;
+    const usePartnerGroup = configuredGroup && configuredGroup.toUpperCase() !== GENERAL_GROUP;
 
     const basePayload = {
         memberNumber: '01',
@@ -1318,18 +1318,17 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         partnerPharmacies = removeOutliersUsingSD(pv, 1.5).sort((a, b) => a.PatientPay - b.PatientPay);
     }
 
-    // Feature the cheapest Tier-1 pharmacy per pricing group. The pool depends
-    // on the page: pharmacy pages feature from the partner-group query — the
-    // partner's own pharmacies come back as Tier 1, so Tier-1 filtering is what
-    // keeps a Rochester (RRH) search from pinning a Brookshire store just
-    // because it was the cheapest thing nearby. Group pages feature from the
-    // general TPD001 list. Never take "cheapest of all" — always Tier 1.
+    // Feature the cheapest Tier-1 pharmacy per pricing group, ONE slot per group,
+    // up to 3. The pool is the PARTNER group when one is configured — its Tier-1
+    // rows are the partner's own pharmacies. Never fall back to TPD001 for the
+    // pin: if the partner group returns nothing (e.g. RRH searched from Lufkin),
+    // the partner has no pharmacy in range, so there is NO pin — we must not
+    // surface a random cheap store (Brookshire). Only pages with no partner
+    // group at all feature from the general TPD001 list.
     let featuredPharmacies = [];
     let multipleGroupsPresent = false;
 
-    const featuredPool = (PAGE_TYPE === 'pharmacy' && partnerPharmacies && partnerPharmacies.length)
-        ? partnerPharmacies
-        : filteredPharmacies;
+    const featuredPool = usePartnerGroup ? (partnerPharmacies || []) : filteredPharmacies;
 
     const tier1        = featuredPool.filter(p => p.Pharmacy?.Tier === '1');
     const uniqueGroups = new Set(tier1.map(p => p.Pricing?.CostCalculatorRuleName || 'UNKNOWN'));
