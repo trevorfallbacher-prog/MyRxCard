@@ -509,19 +509,19 @@ async function fetchPharmacies(payload) {
         });
         if (!response.ok) {
             const errorText = await response.text();
-            document.getElementById('loader').style.display = 'none';
+            { const _ld = document.getElementById('loader'); if (_ld) _ld.style.display = 'none'; }
             console.error('Server Error:', errorText);
             document.getElementById('errorMessage').textContent = 'Server error occurred: ' + errorText;
             return [];
         }
         const data = await response.json();
-        document.getElementById('loader').style.display = 'none';
+        { const _ld = document.getElementById('loader'); if (_ld) _ld.style.display = 'none'; }
         // Pricing result is normally { Response: [...] }; unwrap a transport
         // envelope if one slips through, and always hand back an array.
         const result = (data && data.response && data.response.result) ? data.response.result : data;
         return asArray(result?.Response ?? result);
     } catch (error) {
-        document.getElementById('loader').style.display = 'none';
+        { const _ld = document.getElementById('loader'); if (_ld) _ld.style.display = 'none'; }
         console.error('Error fetching pharmacies:', error);
         document.getElementById('errorMessage').textContent = 'Failed to fetch pharmacies.';
         return [];
@@ -1232,7 +1232,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     );
     const [pharmacies, partnerRaw = null] = await Promise.all(requests);
 
-    document.getElementById('loader').style.display = 'none';
+    { const _ld = document.getElementById('loader'); if (_ld) _ld.style.display = 'none'; }
     resultsDiv.style.display = pharmacies.length > 0 ? 'block' : 'none';
 
     if (pharmacies.length === 0) {
