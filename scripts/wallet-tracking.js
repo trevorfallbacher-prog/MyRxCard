@@ -32,6 +32,10 @@
     return id;
   }
 
+  function ls(key) {
+    try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+  }
+
   var ua = navigator.userAgent || '';
   var DEVICE  = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
   var BROWSER = /Edg/i.test(ua) ? 'Edge'
@@ -67,6 +71,12 @@
     params.set('partner_slug',  partnerSlug());
     params.set('device_type',   DEVICE);
     params.set('browser',       BROWSER);
+    // Enrich with the location main.js detects on load and stores in
+    // localStorage — so a wallet save carries the user's city/state/zip even
+    // when no drug search was run. (ndc/gpi/drug stay empty: a save isn't a search.)
+    params.set('zip',   ls('userZip'));
+    params.set('city',  ls('userCity'));
+    params.set('state', ls('userState'));
     try {
       if (navigator.sendBeacon) {
         navigator.sendBeacon(XANO, params);
