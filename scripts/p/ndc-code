@@ -1,0 +1,432 @@
+<style>
+
+<div id="no-result" style="display: none;"></div>
+<div id="errorMessage" style="color: red;"></div>
+
+<div id="loader" style="display:none;"></div>
+<div id="dynamic-loader" style="display:none;">
+  <div class="pill-container">
+    <div class="capsule">
+      <div class="half half-left"></div>
+      <div class="half half-right"></div>
+    </div>
+    <div class="sparkles">
+      <span class="sparkle"></span>
+      <span class="sparkle"></span>
+      <span class="sparkle"></span>
+      <span class="sparkle"></span>
+      <span class="sparkle"></span>
+    </div>
+   <h3 class="loading-message">Loading...</h3>
+  </div>
+</div>
+</style>
+<script>
+let selectedDrug = [];
+let pharmacies = []; 
+
+// Fetch pharmacies function
+async function fetchPharmacies(payload) {
+  try { 
+    const response = await fetch(`${baseUrl}/PharmacyRadiusPricing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apiKey },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      
+      // Hide loader if present
+      const loaderElement = document.getElementById('loader');
+      if (loaderElement) loaderElement.style.display = 'none';
+      
+      document.getElementById('errorMessage').textContent = 'Server error occurred: ' + errorText;
+      return [];
+    }
+
+    const data = await response.json();
+    
+    // Hide loader if present
+    const loaderElement = document.getElementById('loader');
+    if (loaderElement) loaderElement.style.display = 'none';
+    
+    return data.Response || [];
+  } catch (error) {
+    // Hide loader if present
+    const loaderElement = document.getElementById('loader');
+    if (loaderElement) loaderElement.style.display = 'none';
+    
+    document.getElementById('errorMessage').textContent = 'Failed to fetch pharmacies.';
+    return [];
+  }
+}
+//showLoader();
+pharmacyListDiv.innerHTML = ''; // Clear any previous pharmacy results
+// Add event listener to the search button
+
+  // Show loader while fetching data
+  const loaderElement = document.getElementById('loader');
+  if (loaderElement) loaderElement.style.display = 'block';
+ 
+document.getElementById('searchButton1').addEventListener('click', async function () {
+  const ndcValueRaw = document.getElementById('ndcInput').value.trim();
+const ndcValue = ndcValueRaw.replace(/[-\s]/g, ''); // Remove hyphens and spaces
+
+if (!/^\d{11}$/.test(ndcValue)) {
+  alert('Please enter a valid 11-digit NDC (no spaces or hyphens).');
+  return;
+}
+
+document.getElementById('searchButton').style.display = 'none';
+
+  showLoader(); // Show loader
+
+  const payload = {
+    memberNumber: '01',
+    ndc: ndcValue,
+    quantity: !isNaN(parseFloat(selectedDrug?.MedPackSize))
+    ? Math.round(parseFloat(selectedDrug.MedPackSize) * 10) / 10
+    : 30,
+    daysSupply: 3,
+    groupNum: 'TPD001',
+    zip: userZip,
+    radius: userRadius,
+    maxRecords: 3000,
+  };
+
+  const pharmacies = await fetchPharmacies(payload);
+  hideLoader(); // Hide loader
+
+  const resultsDiv = document.getElementById('results-div');
+  const errorMessageElement = document.getElementById('error-message');
+  const pharmacyListDiv = document.getElementById('pharmacyList');
+  const noResultDiv = document.getElementById("no-result");
+  const toggleSwitch = document.getElementById("pharmacy-toggle");
+  const filteredPharmacyListDiv = document.getElementById("filtered-pharmacy-list");
+
+  if (pharmacies.length > 0) {
+    resultsDiv.style.display = 'block';
+  } else {
+    resultsDiv.style.display = 'none';
+  }
+
+  if (pharmacies.length === 0) {
+    if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found.';
+    pharmacyListDiv.innerHTML = '';
+    return;
+  } else {
+    if (errorMessageElement) errorMessageElement.textContent = '';
+  }
+
+  const uwHealthPharmacies = pharmacies.filter(
+    (pharmacy) =>
+      pharmacy.Pricing?.PatientPay &&
+      pharmacy.Pricing.PatientPay !== '' &&
+      pharmacy.Pharmacy?.Name.toUpperCase().includes('UW HEALTH')
+  );
+
+  if (uwHealthPharmacies.length === 0) {
+    pharmacyListDiv.innerHTML = `
+      <div class="pharmacy-card">
+        <p>No Results Found</p>
+        <p>Please Adjust ZIP/Radius</p>
+      </div>
+    `;
+    if (noResultDiv) noResultDiv.style.display = 'block';
+    if (toggleSwitch) {
+      toggleSwitch.checked = false;
+      toggleSwitch.style.display = 'none';
+    }
+    if (filteredPharmacyListDiv) filteredPharmacyListDiv.style.display = 'block';
+  } else {
+    if (noResultDiv) noResultDiv.style.display = 'none';
+
+    const nonUwHealthPharmacies = pharmacies.filter(pharmacy => {
+      const name = pharmacy.Pharmacy?.Name || '';
+      return (
+        pharmacy.Pricing?.PatientPay &&
+        pharmacy.Pricing.PatientPay !== '' &&
+        !name.toUpperCase().includes("UW HEALTH")
+      );
+    });
+
+    let filteredPharmacies = removeOutliersUsingSD(nonUwHealthPharmacies)
+      .sort((a, b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay))
+      .slice(0, 9);
+
+    let lowestNonUwPrice = null;
+    filteredPharmacies.forEach((pharmacy) => {
+      const price = parseFloat(pharmacy.Pricing.PatientPay);
+      if (!isNaN(price) && (lowestNonUwPrice === null || price < lowestNonUwPrice)) {
+        lowestNonUwPrice = price;
+      }
+    });
+
+    if (lowestNonUwPrice !== null) {
+      pharmacyListDiv.innerHTML = uwHealthPharmacies
+        .slice(0, 1)
+        .map((pharmacy) => {
+          const uwPrice = parseFloat(pharmacy.Pricing?.PatientPay);
+          if (isNaN(uwPrice)) return `<div class="pharmacy-card">Invalid UW Health Pharmacy Price</div>`;
+
+          const formattedPrice = formatNumberWithCommas(uwPrice);
+          let comparativePricingMessage = '';
+          if (uwPrice <= lowestNonUwPrice) {
+            const savings = lowestNonUwPrice - uwPrice;
+            comparativePricingMessage = `Patient Saves $${formatNumberWithCommas(savings.toFixed(2))}`;
+          } else {
+            const extraCost = uwPrice - lowestNonUwPrice;
+            comparativePricingMessage = `Patient Spends $${formatNumberWithCommas(extraCost.toFixed(2))} More`;
+          }
+
+          return `
+            <div class="pharmacy-card" data-price="${formattedPrice}">
+             <h2 class="price">$${formattedPrice}</h2>
+              <p class="comparative-pricing">${comparativePricingMessage}</p>
+            </div>
+          `;
+        })
+        .join('');
+    } else {
+      pharmacyListDiv.innerHTML = "<p>No valid pharmacies found to compare prices.</p>";
+    }
+  }
+
+
+// Initial setup
+if (toggleSwitch) {
+  toggleSwitch.checked = true; // ON by default
+  toggleSwitch.style.display = 'block';
+  filteredPharmacyListDiv.style.display = 'block'; // Show list initially
+}
+
+// Toggle event listener
+if (toggleSwitch) {
+  toggleSwitch.addEventListener('change', function () {
+    if (toggleSwitch.checked) {
+      filteredPharmacyListDiv.style.display = 'block'; // Show the list when ON
+      renderFilteredPharmacies(); // Optionally re-render
+    } else {
+      filteredPharmacyListDiv.style.display = 'none'; // Hide the list when OFF
+    }
+  });
+}
+
+
+  renderFilteredPharmacies(pharmacies,selectedDrug);
+  initializePharmacyCardListeners();
+});
+
+// ========== Utility Functions ========== //
+
+function formatNumberWithCommas(num) {
+  return parseFloat(num)
+    .toFixed(2)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function trimLastWordIfEndsWithNumber(str) {
+  const match = str.match(/(#?\d+)$/);
+  return match ? str.replace(match[0], '').trim() : str.trim();
+}
+
+function toTitleCaseWithSpecialRule(str) {
+  return str
+    .split(' ')
+    .map(word =>
+      word.length > 1
+        ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        : word.toUpperCase()
+    )
+    .join(' ');
+}
+
+function removeOutliersUsingSD(data, multiplier = 2) {
+  let prices = data
+    .map(pharmacy => parseFloat(pharmacy.Pricing?.PatientPay))
+    .filter(price => !isNaN(price));
+  if (prices.length < 2) return data;
+
+  const mean = prices.reduce((sum, price) => sum + price, 0) / prices.length;
+  const variance = prices.reduce((sum, price) => sum + Math.pow(price - mean, 2), 0) / prices.length;
+  const stdDev = Math.sqrt(variance);
+  const lower = mean - multiplier * stdDev;
+  const upper = mean + multiplier * stdDev;
+
+  return data.filter(pharmacy => {
+    const price = parseFloat(pharmacy.Pricing?.PatientPay);
+    return price >= lower && price <= upper;
+  });
+}
+
+function renderFilteredPharmacies(pharmacies,selectedDrug) {
+  const filteredPharmacyListDiv = document.getElementById("filtered-pharmacy-list");
+  const toggleSwitch = document.getElementById("pharmacy-toggle");
+
+  if (!filteredPharmacyListDiv || !toggleSwitch) return;
+
+  const nonUwPharmacies = pharmacies.filter(pharmacy =>
+    pharmacy.Pricing?.PatientPay &&
+    pharmacy.Pricing.PatientPay !== '' &&
+    pharmacy.Pharmacy?.Name &&
+    !pharmacy.Pharmacy.Name.toUpperCase().includes("UW HEALTH")
+  );
+
+ if (nonUwPharmacies.length === 0) {
+  filteredPharmacyListDiv.innerHTML = '<h5 style="color: red;">No Pharmacies Found. Please Enter Valid NDC.</h5>';
+  return;
+}
+
+
+  let filtered = removeOutliersUsingSD(nonUwPharmacies)
+    .sort((a, b) => parseFloat(a.Pricing.PatientPay) - parseFloat(b.Pricing.PatientPay))
+    .slice(0, 9);
+
+  filteredPharmacyListDiv.innerHTML = filtered.map(pharmacy => {
+    const formattedPrice = formatNumberWithCommas(pharmacy.Pricing?.PatientPay);
+    const formattedName = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy?.Name || 'Unknown Pharmacy'));
+    const formattedAddress = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy?.Address1 || ''));
+    const formattedAddress2 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(pharmacy.Pharmacy?.Address2 || ''));
+
+   const drugName = (typeof selectedDrug !== 'undefined' && selectedDrug.MedDrugName) || 'Unknown Drug';
+
+    const dosage = selectedDrug?.MedStrength ? `${selectedDrug.MedStrength} ${selectedDrug.Uom}` : 'Unknown Dosage';
+    const form = selectedDrug?.DosageForm || 'Unknown Form';
+    const quantityDisplay = quantity || 'Unknown Quantity';
+
+    return `
+      <div class="pharmacy-card1" 
+        data-pharmacy-name="${formattedName}" 
+        data-price="${formattedPrice}" 
+        data-drug-name="${drugName}" 
+        data-dosage="${dosage}" 
+        data-quantity="${quantityDisplay}" 
+        data-form="${form}">
+        <div class="pharmacy-details">
+          <h4>${formattedName}</h4>
+          <p>${formattedAddress} ${formattedAddress2}</p>
+          <p>${pharmacy.Pharmacy?.City}, ${pharmacy.Pharmacy?.State} ${pharmacy.Pharmacy?.Zip?.substring(0, 5)}</p>
+        </div>
+        <div class="pharmacy-price">
+          <h1 class="price">$${formattedPrice}</h1>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  initializePharmacyCardListeners();
+}
+
+function initializePharmacyCardListeners() {
+  const pharmacyCards1 = document.querySelectorAll('.pharmacy-card1');
+  pharmacyCards1.forEach(card => {
+    card.addEventListener('click', (event) => {
+      pharmacyCards1.forEach(c => c.classList.remove('selected'));
+      event.currentTarget.classList.add('selected');
+    });
+  });
+}
+
+function showLoader() {
+  let loader = document.getElementById('dynamic-loader');
+  if (!loader) {
+    loader = document.createElement('div');
+    loader.id = 'dynamic-loader';
+    loader.innerHTML = `
+      <div class="pill-container">
+        <div class="capsule">
+          <div class="half half-left"></div>
+          <div class="half half-right"></div>
+        </div>
+        <div class="sparkles">
+          <span class="sparkle"></span>
+          <span class="sparkle"></span>
+          <span class="sparkle"></span>
+          <span class="sparkle"></span>
+          <span class="sparkle"></span>
+        </div>
+        <h3 class="loading-message">Loading...</h3>
+      </div>
+    `;
+    document.body.appendChild(loader);
+  }
+  loader.style.display = 'flex';
+}
+
+function hideLoader() {
+  const loader = document.getElementById('dynamic-loader');
+  if (loader) loader.remove();
+}
+
+// Call loadRecentSearches on load if exists
+window.onload = function () {
+  if (typeof loadRecentSearches === "function") {
+    loadRecentSearches();
+  }
+};
+
+//--
+
+ document.getElementById('ndcInput').addEventListener('input', async function () {
+    const ndc = this.value.trim().replace(/[-\s]/g, '');
+
+    if (ndc.length === 11 && /^\d{11}$/.test(ndc)) {
+      const drugData = await fetchDrugDetailsByNDC(ndc);
+      //console.log('Drug Data Fetched:', drugData);
+
+      if (drugData) {
+        fillDrugDetailsFromAPI(drugData);
+        document.getElementById('errorMessage').textContent = '';
+        document.getElementById('searchButton').style.display = 'none';
+        document.getElementById('or-id').style.display = 'none';
+      } else {
+        document.getElementById('errorMessage').textContent = 'No drug found for this NDC.';
+      }
+    }
+  });
+
+  async function fetchDrugDetailsByNDC(ndc) {
+    try {
+      const res = await fetch(`${baseUrl}/DrugDataByIdentifier?searchType=NDC&search=${ndc}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'apiKey': apiKey // Remove or replace with actual API key if not needed
+        }
+      });
+
+      if (!res.ok) {
+        console.error('Failed to fetch drug data:', await res.text());
+        return null;
+      }
+
+      const data = await res.json();
+      return data?.[0] || null;
+    } catch (err) {
+      console.error('Error fetching NDC data:', err);
+      return null;
+    }
+  }
+
+  function fillDrugDetailsFromAPI(drug) {
+    const drugName = drug.MedDrugName || '';
+    const form = drug.DosageForm || '';
+    const strength = (drug.MedStrength && drug.Uom) ? `${drug.MedStrength} ${drug.Uom}` : '';
+    const quantity = (!isNaN(parseFloat(drug.MedPackSize)))
+  ? Math.round(parseFloat(drug.MedPackSize) * 10) / 10
+  : 30;
+
+    document.getElementById('inputDrugs').value = drugName;
+
+    const formDropdown = document.getElementById('formDropdown');
+    formDropdown.innerHTML = `<option value="${form}" selected>${form}</option>`;
+
+    const dosageDropdown = document.getElementById('dosageDropdown');
+    dosageDropdown.innerHTML = `<option value="${strength}" selected>${strength}</option>`;
+
+    document.getElementById('quantity').value = quantity;
+
+    selectedDrug = drug;
+  }
+
+</script>
