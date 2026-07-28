@@ -119,10 +119,11 @@
     var payload = baseFields();
     for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) payload[k] = fields[k];
     var params = form(payload);
-    if (opts.nav && navigator.sendBeacon) {
-      try { navigator.sendBeacon(BASE, params); } catch (e) {}
-      return null;
-    }
+    // Always fetch + keepalive, never sendBeacon: keepalive survives navigation
+    // just as well, AND returns the new row id. The old beacon path was
+    // fire-and-forget, so when the page survived the Apple click (desktop = a
+    // pass DOWNLOAD, no navigation) the id was lost and the next card action
+    // created a second row instead of patching this one.
     // POST form-encoded (CORS-simple, no preflight); read the id back.
     try {
       return fetch(BASE, {
@@ -199,7 +200,7 @@
       if (isSameTabNav) {
         e.preventDefault();
         var href = badge.href;
-        log({ wallet_saved: true, platform: platform }, { nav: !recordId() });
+        log({ wallet_saved: true, platform: platform });
         setTimeout(function () { window.location.href = href; }, 350);
       } else {
         log({ wallet_saved: true, platform: platform });
