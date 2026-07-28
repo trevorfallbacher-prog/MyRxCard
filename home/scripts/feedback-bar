@@ -1,0 +1,309 @@
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
+
+<style>
+  #feedback-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 32px;
+    padding: 0 4px;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    pointer-events: none;
+  }
+  #feedback-bar.fb-visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  #feedback-bar .fb-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #7a7a72;
+    white-space: nowrap;
+  }
+  #feedback-bar .fb-btns {
+    display: flex;
+    gap: 10px;
+  }
+  #feedback-bar .fb-btn {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    border: 1.5px solid #e0ddd6;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: border-color 0.18s ease, background 0.18s ease,
+                box-shadow 0.18s ease, transform 0.18s ease;
+    -webkit-tap-highlight-color: transparent;
+    overflow: visible;
+  }
+  #feedback-bar .fb-btn:hover:not(.fb-selected):not(.fb-inactive) {
+    border-color: #3884a4;
+    background: #eaf3f7;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+    transform: translateY(-1px);
+  }
+  #feedback-bar .fb-btn.fb-up.fb-selected   { border-color: #2a7a4f; background: #e8f5ee; transform: translateY(-1px); }
+  #feedback-bar .fb-btn.fb-down.fb-selected { border-color: #b83232; background: #fceaea; transform: translateY(-1px); }
+  #feedback-bar .fb-btn.fb-inactive         { opacity: 0.3; pointer-events: none; }
+  #feedback-bar .fb-lottie {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    display: block;
+    position: relative;
+  }
+  #feedback-bar .fb-lottie svg {
+    width: 36px !important;
+    height: 36px !important;
+    display: block;
+  }
+  #feedback-bar .fb-lottie.fb-flipped { transform: rotate(180deg); }
+  #feedback-bar .fb-thankyou {
+    font-size: 13px;
+    color: #7a7a72;
+    opacity: 0;
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: opacity 0.3s ease 0.2s, max-width 0.4s ease 0.1s;
+  }
+  #feedback-bar .fb-thankyou.fb-ty-visible { opacity: 1; max-width: 260px; }
+
+  #fb-followup {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+    max-width: 0;
+    opacity: 0;
+    transition: max-width 0.4s ease 0.3s, opacity 0.35s ease 0.35s;
+    white-space: nowrap;
+  }
+  #fb-followup.fb-fu-visible { max-width: 320px; opacity: 1; }
+
+  @media (max-width: 600px) {
+    #feedback-bar {
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    #feedback-bar .fb-label { text-align: center; }
+    #feedback-bar .fb-btns { justify-content: center; }
+    #fb-followup {
+      max-width: 0;
+      width: 100%;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    #fb-followup.fb-fu-visible {
+      max-width: 100%;
+      margin-bottom: 24px;
+    }
+    #fb-followup input { width: 160px; }
+  }
+  #fb-followup input {
+    font-family: inherit;
+    font-size: 13px;
+    color: #2c2c2a;
+    background: transparent;
+    border: none;
+    border-bottom: 1.5px solid #e0ddd6;
+    outline: none;
+    padding: 4px 2px;
+    width: 200px;
+    transition: border-color 0.18s ease;
+    border-radius: 0;
+  }
+  #fb-followup input:focus { border-bottom-color: #3884a4; }
+  #fb-followup input::placeholder { color: #b4b2a9; }
+  #fb-followup .fb-send {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: none;
+    background: #3884a4;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 0;
+    transition: background 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+  }
+  #fb-followup .fb-send:hover    { background: #2d6f8a; transform: scale(1.08); }
+  #fb-followup .fb-send:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  #fb-followup .fb-sent-msg {
+    font-size: 13px;
+    color: #7a7a72;
+    opacity: 0;
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: opacity 0.3s ease, max-width 0.3s ease;
+  }
+  #fb-followup .fb-sent-msg.visible { opacity: 1; max-width: 200px; }
+</style>
+
+<div id="feedback-bar">
+  <span class="fb-label">Were these results helpful?</span>
+  <div class="fb-btns">
+    <button class="fb-btn fb-up"   id="fbBtnUp"   type="button" aria-label="Yes, helpful">
+      <div class="fb-lottie"            id="fbLotUp"></div>
+    </button>
+    <button class="fb-btn fb-down" id="fbBtnDown" type="button" aria-label="Not helpful">
+      <div class="fb-lottie fb-flipped" id="fbLotDown"></div>
+    </button>
+  </div>
+  <div id="fb-followup">
+    <input type="text" id="fbFollowupInput" maxlength="280" />
+    <button class="fb-send" id="fbSendBtn" type="button" aria-label="Send feedback">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white"
+           stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+    </button>
+    <span class="fb-sent-msg" id="fbSentMsg">Thanks!</span>
+  </div>
+</div>
+
+<script>
+(function () {
+
+  const FB_URLS = {
+    up:   'https://xy2f-yrzu-6a37.n7d.xano.io/vault/rE6QM0Gd/83hv2iJW-AyZqdHRC6lQf0zhX4E/mIr3Lw../thumbs-up.json',
+    down: 'https://xy2f-yrzu-6a37.n7d.xano.io/vault/rE6QM0Gd/LkYpAHPwtMt9ln9HNJbVbkOLVwM/8azK0Q../thumbs-down.json'
+  };
+
+  let DATA = {}, animUp = null, animDown = null;
+  let upHovered = false, dnHovered = false, fbVoted = false;
+
+  // ALL refs declared before any function that uses them
+  const fbBar           = document.getElementById('feedback-bar');
+  const fbBtnUp         = document.getElementById('fbBtnUp');
+  const fbBtnDown       = document.getElementById('fbBtnDown');
+  const fbUpWrap        = document.getElementById('fbLotUp');
+  const fbDnWrap        = document.getElementById('fbLotDown');
+  const fbFollowup      = document.getElementById('fb-followup');
+  const fbFollowupInput = document.getElementById('fbFollowupInput');
+  const fbSendBtn       = document.getElementById('fbSendBtn');
+  const fbSentMsg       = document.getElementById('fbSentMsg');
+
+  // ── Lottie ─────────────────────────────────────────────────────────────────
+  function makeAnim(container, data) {
+    if (container._lottie) { container._lottie.destroy(); container._lottie = null; }
+    container.innerHTML = '';
+    const a = lottie.loadAnimation({
+      container, renderer: 'svg', loop: false, autoplay: false, animationData: data,
+      rendererSettings: { preserveAspectRatio: 'xMidYMid meet' }
+    });
+    container._lottie = a;
+    a.addEventListener('DOMLoaded', () => {
+      const svg = container.querySelector('svg');
+      if (svg) {
+        svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
+        svg.style.width = '100%'; svg.style.height = '100%';
+      }
+    });
+    return a;
+  }
+  function loadIdle(c, d)    { const a = makeAnim(c, d); a.goToAndStop(0, true); return a; }
+  function loadHover(c, d)   { const a = makeAnim(c, d); a.goToAndStop(0, true); return a; }
+  function loadAndPlay(c, d) { const a = makeAnim(c, d); a.goToAndStop(0, true); a.play(); return a; }
+
+  // ── Reset ──────────────────────────────────────────────────────────────────
+  function fbReset() {
+    fbVoted = false; upHovered = false; dnHovered = false;
+    fbBtnUp.classList.remove('fb-selected', 'fb-inactive');
+    fbBtnDown.classList.remove('fb-selected', 'fb-inactive');
+    fbFollowup.classList.remove('fb-fu-visible');
+    fbFollowupInput.value = '';
+    fbFollowupInput.style.display = '';
+    fbSendBtn.style.display = '';
+    fbSendBtn.disabled = false;
+    fbSentMsg.classList.remove('visible');
+    animUp   = loadIdle(fbUpWrap, DATA.upIdle);
+    animDown = loadIdle(fbDnWrap, DATA.dnIdle);
+  }
+
+  // ── Follow-up ──────────────────────────────────────────────────────────────
+  function showFollowup(placeholder) {
+    fbFollowupInput.placeholder = placeholder;
+    setTimeout(() => fbFollowup.classList.add('fb-fu-visible'), 50);
+  }
+  function sendFollowup() {
+    const text = fbFollowupInput.value.trim();
+    if (!text) return;
+    fbSendBtn.disabled = true;
+    fbFollowupInput.style.display = 'none';
+    fbSendBtn.style.display = 'none';
+    fbSentMsg.classList.add('visible');
+    setTimeout(() => fbSentMsg.classList.remove('visible'), 2500);
+    if (typeof updateSearchRecord === 'function') updateSearchRecord({ feedback_comment: text });
+  }
+  fbSendBtn.addEventListener('click', sendFollowup);
+  fbFollowupInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendFollowup(); });
+
+  // ── Hover ──────────────────────────────────────────────────────────────────
+  fbBtnUp.addEventListener('mouseenter',   () => { if (!fbVoted) { upHovered = true;  animUp   = loadHover(fbUpWrap, DATA.upHover); } });
+  fbBtnUp.addEventListener('mouseleave',   () => { if (!fbVoted) { upHovered = false; animUp   = loadIdle(fbUpWrap,  DATA.upIdle);  } });
+  fbBtnDown.addEventListener('mouseenter', () => { if (!fbVoted) { dnHovered = true;  animDown = loadHover(fbDnWrap, DATA.dnHover); } });
+  fbBtnDown.addEventListener('mouseleave', () => { if (!fbVoted) { dnHovered = false; animDown = loadIdle(fbDnWrap,  DATA.dnIdle);  } });
+
+  // ── Click ──────────────────────────────────────────────────────────────────
+  fbBtnUp.addEventListener('click', () => {
+    if (fbVoted) return;
+    fbVoted = true;
+    fbBtnUp.classList.add('fb-selected');
+    fbBtnDown.classList.add('fb-inactive');
+    animUp = loadAndPlay(fbUpWrap, upHovered ? DATA.upHoverClick : DATA.upIdle);
+    showFollowup('Tell us what went right.');
+    if (typeof updateSearchRecord === 'function') updateSearchRecord({ search_feedback: 'positive' });
+  });
+
+  fbBtnDown.addEventListener('click', () => {
+    if (fbVoted) return;
+    fbVoted = true;
+    fbBtnDown.classList.add('fb-selected');
+    fbBtnUp.classList.add('fb-inactive');
+    animDown = loadAndPlay(fbDnWrap, dnHovered ? DATA.dnHoverClick : DATA.dnIdle);
+    showFollowup('Tell us what went wrong.');
+    if (typeof updateSearchRecord === 'function') updateSearchRecord({ search_feedback: 'negative' });
+  });
+
+  // ── Load ───────────────────────────────────────────────────────────────────
+  async function load() {
+    try {
+      const [up, dn] = await Promise.all([
+        fetch(FB_URLS.up).then(r => r.json()),
+        fetch(FB_URLS.down).then(r => r.json())
+      ]);
+      DATA = {
+        upIdle: up.idle, upHover: up.hover, upHoverClick: up.click,
+        dnIdle: dn.idle, dnHover: dn.hover, dnHoverClick: dn.click
+      };
+      fbReset();
+      fbBar.classList.add('fb-visible');
+    } catch (e) {
+      console.error('Feedback bar failed to load:', e);
+    }
+  }
+
+  window.showFeedbackBar = function () {
+    if (!fbBar.classList.contains('fb-visible')) {
+      load();
+    } else {
+      fbReset();
+    }
+  };
+
+})();
+</script>
