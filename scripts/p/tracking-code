@@ -1,0 +1,105 @@
+<head>
+<script>
+(function() {
+  const XANO_BASE = 'https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh';
+
+  let currentSearchRecordId = null;
+  let hasPrinted = false;
+  let currentSelectedNpi = null;
+  let currentSelectedPosition = 0;
+  let currentSelectedIsFeatured = true;
+  let isRecentSearch = false;
+  const SESSION_START = new Date();
+
+  const DEVICE_TYPE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'mobile' : 'desktop';
+  const BROWSER = (() => {
+    const ua = navigator.userAgent;
+    if (/Edg/i.test(ua)) return 'Edge';
+    if (/Chrome/i.test(ua)) return 'Chrome';
+    if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) return 'Safari';
+    if (/Firefox/i.test(ua)) return 'Firefox';
+    if (/MSIE|Trident/i.test(ua)) return 'Internet Explorer';
+    return 'Other';
+  })();
+
+  const SESSION_ID = (() => {
+    let id = localStorage.getItem('myrxcard_session_id');
+    if (!id) {
+      id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+      localStorage.setItem('myrxcard_session_id', id);
+    }
+    return id;
+  })();
+
+  const SOURCE_URL    = window.location.href;
+  const SOURCE_DOMAIN = window.location.hostname;
+  const SOURCE_PATH   = window.location.pathname;
+
+  function getSessionDuration() {
+    return Math.round((new Date() - SESSION_START) / 1000);
+  }
+
+  async function trackSearch(data) {
+    try {
+      const response = await fetch(`${XANO_BASE}/search_events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      const result = await response.json();
+      window._rxTrack.currentSearchRecordId = result.id || result.search_events_id || null;
+      window._rxTrack.hasPrinted = false;
+    } catch (e) {}
+  }
+
+  async function updateSearchRecord(data) {
+    if (!window._rxTrack.currentSearchRecordId) return;
+    try {
+      await fetch(`${XANO_BASE}/search_events/${window._rxTrack.currentSearchRecordId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    } catch (e) {}
+  }
+
+  window.addEventListener('beforeunload', () => {
+    const t = window._rxTrack;
+    if (t.currentSearchRecordId && !t.hasPrinted) {
+      const payload = JSON.stringify({
+        session_duration_seconds: getSessionDuration(),
+        session_start: SESSION_START.toISOString(),
+        abandoned: true
+      });
+      navigator.sendBeacon(
+        `${XANO_BASE}/search_events/${t.currentSearchRecordId}`,
+        new Blob([payload], { type: 'application/json' })
+      );
+    }
+  });
+
+  // Expose everything scripts in other blocks need
+  window._rxTrack = {
+    currentSearchRecordId,
+    hasPrinted,
+    currentSelectedNpi,
+    currentSelectedPosition,
+    currentSelectedIsFeatured,
+    isRecentSearch,
+    SESSION_START,
+    SESSION_ID,
+    SOURCE_URL,
+    SOURCE_DOMAIN,
+    SOURCE_PATH,
+    DEVICE_TYPE,
+    BROWSER,
+    getSessionDuration,
+    trackSearch,
+    updateSearchRecord
+  };
+})();
+</script>
+</head>
