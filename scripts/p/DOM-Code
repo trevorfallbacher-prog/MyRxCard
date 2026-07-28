@@ -308,14 +308,18 @@
           }
         }
 
-        // Drug name path
-        if (!s.selectedDrug && drugName) {
-          s.selectedDrug = s.drugData.find(d =>
+        // Drug name path — re-resolve on EVERY search (not just when null) so a
+        // dosage/form change picks the matching NDC instead of pricing the stale
+        // one. Only overwrite when a fresh match exists, so an NDC-lookup drug
+        // (whose exact row may not be in drugData) is never clobbered.
+        if (drugName && !ndc) {
+          const fresh = s.drugData.find(d =>
             d.MedDrugName === drugName &&
             `${d.MedStrength} ${d.Uom}` === dosage &&
             d.DosageForm === form
           );
-          if (!s.selectedDrug && s.recentSearches?.length) {
+          if (fresh) s.selectedDrug = fresh;
+          else if (!s.selectedDrug && s.recentSearches?.length) {
             const hit = s.recentSearches.find(rs =>
               rs.details?.overallData?.MedDrugName === drugName &&
               `${rs.details.overallData.MedStrength} ${rs.details.overallData.Uom}` === dosage &&
@@ -392,7 +396,7 @@
             result_count:           filteredPinned.length + filteredOthers.length,
             featured_count:         filteredPinned.length,
             has_featured:           filteredPinned.length > 0,
-            top_price:              pinnedPrice,
+            top_price:              (pinnedPrice != null ? pinnedPrice : lowestOther),
             group_conflict:         false,
             printed:                false,
             abandoned:              false,
@@ -444,6 +448,7 @@
             }
             pharmacyListDiv.innerHTML = `
               <div class="pharmacy-card"
+                   data-npi="${best.Pharmacy.Npi||''}"
                    data-pharmacy-name="${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Name))}"
                    data-price="${s.formatNumberWithCommas(best.Pricing.PatientPay)}"
                    data-drug-name="${s.selectedDrug.MedDrugName}"

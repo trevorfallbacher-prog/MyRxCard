@@ -290,6 +290,7 @@
     // ---- Search button ----
     if (searchBtn) {
   searchBtn.addEventListener('click', async () => {
+    if (window._rxTrack) window._rxTrack.isRecentSearch = false;
     const drugName = (inputField?.value || '').trim();
     const dosage   = dosageDropdown?.value || '';
     const form     = formDropdown?.value   || '';
@@ -391,6 +392,7 @@
             }
             pharmacyListDiv.innerHTML = `
               <div class="pharmacy-card"
+                   data-npi="${best.Pharmacy.Npi||''}"
                    data-pharmacy-name="${s.toTitleCaseWithSpecialRule(s.trimLastWordIfEndsWithNumber(best.Pharmacy.Name))}"
                    data-price="${s.formatNumberWithCommas(best.Pricing.PatientPay)}"
                    data-drug-name="${selectedDrug.MedDrugName}"
@@ -601,6 +603,18 @@
         card.addEventListener('click', (e) => {
           const sel  = e.currentTarget;
           const data = sel.dataset;
+          // record which pharmacy the user actually selected (parity with group page)
+          if (window._rxTrack) {
+            window._rxTrack.currentSelectedNpi        = data.npi || null;
+            window._rxTrack.currentSelectedPosition   = 0;
+            window._rxTrack.currentSelectedIsFeatured = true;
+            window._rxTrack.updateSearchRecord({
+              selected_pharmacy_name: data.pharmacyName || null,
+              selected_pharmacy_npi:  data.npi          || null,
+              selected_is_featured:   true,
+              selected_card_position: 0
+            });
+          }
           const spn  = document.getElementById('selected-pharmacy-name');
           const spr  = document.getElementById('selected-price');
           const spn1 = document.getElementById('selected-pharmacy-name1');

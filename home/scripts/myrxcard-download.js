@@ -519,5 +519,46 @@
     if(d.fonts && d.fonts.ready){ d.fonts.ready.then(function(){ setTimeout(doPrint, 80); }); }
     setTimeout(doPrint, 1200);
   });
+
+  // --- Wallet save tracking → Xano wallet_events ---
+  // Both badges are <a> navigations, so use sendBeacon (survives the unload
+  // when Apple opens the pass in the same tab). Captures platform, session,
+  // the source page, and the partner slug from /s/<slug> or /p/<slug>.
+  (function(){
+    var XANO = "https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh/wallet_events";
+    function sessionId(){
+      var id = localStorage.getItem('myrxcard_session_id');
+      if(!id){
+        id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
+          var r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16);
+        });
+        localStorage.setItem('myrxcard_session_id', id);
+      }
+      return id;
+    }
+    var ua = navigator.userAgent || '';
+    var device  = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
+    var browser = /Edg/i.test(ua) ? 'Edge'
+                : /Chrome/i.test(ua) ? 'Chrome'
+                : (/Safari/i.test(ua) && !/Chrome/i.test(ua)) ? 'Safari'
+                : /Firefox/i.test(ua) ? 'Firefox' : 'Other';
+    var m = (location.pathname || '').match(/\/[sp]\/([^\/?#]+)/i);
+    var slug = m ? decodeURIComponent(m[1]) : '';
+    function logWallet(platform){
+      var payload = JSON.stringify({
+        platform: platform, session_id: sessionId(),
+        source_url: location.href, source_domain: location.hostname, source_path: location.pathname,
+        partner_slug: slug, device_type: device, browser: browser
+      });
+      try {
+        if (navigator.sendBeacon) navigator.sendBeacon(XANO, new Blob([payload], { type:'application/json' }));
+        else fetch(XANO, { method:'POST', headers:{'Content-Type':'application/json'}, body:payload, keepalive:true });
+      } catch(e){}
+    }
+    var aBtn = document.getElementById('rxWalletBtn');
+    var gBtn = document.getElementById('rxGWalletBtn');
+    if (aBtn) aBtn.addEventListener('click', function(){ logWallet('apple'); });
+    if (gBtn) gBtn.addEventListener('click', function(){ logWallet('google'); });
+  })();
 })();
 </script>
