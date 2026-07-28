@@ -59,8 +59,13 @@
   // never one carried over from a previous page view.
   var _recordId = null;
   function recordId()      { return _recordId; }
-  function setRecordId(id) { _recordId = id ? String(id) : null; }
+  function setRecordId(id) { _recordId = id ? String(id) : null; if (!id) _pending = null; }
   function touch()         { /* no-op: id is page-load scoped, nothing to refresh */ }
+
+  // While a create (POST) is in flight, _pending resolves to the new row id.
+  // A print/save fired right after a search waits on this so it patches the
+  // search row instead of racing ahead and creating its own row.
+  var _pending = null;
 
   // Base fields written when the row is first created.
   function baseFields() {
@@ -92,52 +97,60 @@
   // default (no newRow)  -> PATCH the CURRENT search row (used by print / card
   //                        save). Only if there's no current row at all (card
   //                        saved with no prior search) do we create one.
-  function log(fields, opts) {
-    opts = opts || {};
-    var id = recordId();
+  // PATCH the current row (JSON — the PATCH endpoint 500s on form-encoded).
+  function patchRow(id, fields) {
+    try {
+      fetch(BASE + '/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+        keepalive: true
+      });
+    } catch (e) {}
+  }
 
-    if (!opts.newRow && id) {
-      // PATCH the current search row with just the delta (print/save).
-      // PATCH is a non-simple method (needs CORS preflight); keepalive lets it
-      // finish across an unload, and the Apple handler delays nav to be safe.
-      touch();
-      // The PATCH endpoint requires JSON (form-encoded returns "Unable to decode
-      // input"). JSON is a non-simple request so it triggers a CORS preflight —
-      // fine for search/print (page stays); for the Apple save the click handler
-      // delays navigation so the preflight + PATCH have time to leave.
-      try {
-        fetch(BASE + '/' + id, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fields),
-          keepalive: true
-        });
-      } catch (e) {}
-      return;
-    }
-
-    // No row yet -> create one. POST form-encoded is a CORS-simple request, so
-    // it needs no preflight and survives navigation via sendBeacon.
+  // Create a new row. Returns a Promise<id|null> (or null when fired via the
+  // unload-surviving sendBeacon path, where we can't read the id back).
+  function createRow(fields, opts) {
     var payload = baseFields();
     for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) payload[k] = fields[k];
     var params = form(payload);
-
     if (opts.nav && navigator.sendBeacon) {
-      // Terminal action (e.g. Apple save with no prior search): fire-and-forget.
       try { navigator.sendBeacon(BASE, params); } catch (e) {}
-      return;
+      return null;
     }
-    // Normal case: read the new id back so later events PATCH the same row.
+    // POST form-encoded (CORS-simple, no preflight); read the id back.
     try {
-      fetch(BASE, {
+      return fetch(BASE, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
         keepalive: true
       }).then(function (r) { return r.json(); })
-        .then(function (row) { if (row && row.id) setRecordId(row.id); })
-        .catch(function () {});
-    } catch (e) {}
+        .then(function (row) { var id = (row && row.id) ? String(row.id) : null; if (id) _recordId = id; return id; })
+        .catch(function () { return null; });
+    } catch (e) { return null; }
+  }
+
+  function log(fields, opts) {
+    opts = opts || {};
+
+    // Every drug search starts a NEW row and becomes the current row.
+    if (opts.newRow) {
+      _recordId = null;                    // the new search supersedes the prior row
+      _pending  = createRow(fields, opts);
+      return;
+    }
+    // Print / card save -> attach to the CURRENT search row if we have its id.
+    if (_recordId) { patchRow(_recordId, fields); return; }
+    // The search may still be creating its row (the 2ms race) — wait for its id,
+    // then patch it instead of racing ahead and making a separate row.
+    if (_pending) {
+      _pending.then(function (id) { if (id) patchRow(id, fields); else { _pending = createRow(fields, opts); } });
+      return;
+    }
+    // No search on this page load -> this action gets its own row.
+    _pending = createRow(fields, opts);
   }
 
   // ---- built-in wallet + print handling via delegation ----------------------
