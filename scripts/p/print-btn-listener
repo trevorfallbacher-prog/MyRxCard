@@ -1,0 +1,25 @@
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+  const printBtn = document.getElementById('print');
+  if (printBtn) {
+    printBtn.addEventListener('click', () => {
+      const t = window._rxTrack;
+      t.hasPrinted = true;
+      const pharmacyName = document.getElementById('selected-pharmacy-name1')?.textContent || '';
+      const price = document.getElementById('selected-price1')?.textContent?.replace('$', '') || '';
+
+      t.updateSearchRecord({
+        printed: true,
+        printed_pharmacy_name: pharmacyName,
+        printed_pharmacy_npi: t.currentSelectedNpi,
+        printed_pharmacy_price: parseFloat(price) || null,
+        printed_is_featured: true,
+        printed_card_position: 0,
+        session_duration_seconds: t.getSessionDuration(),
+        session_start: t.SESSION_START.toISOString(),
+        printed_timestamp: new Date().toISOString()
+      });
+    });
+  }
+});
+</script>
