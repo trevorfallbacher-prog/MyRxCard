@@ -181,6 +181,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const cardPosition = currentSelectedPosition !== null ? currentSelectedPosition : -1;
             updateSearchRecord({
                 printed: true,
+                platform: 'physical',
                 printed_pharmacy_name: pharmacyName,
                 printed_pharmacy_npi: currentSelectedNpi,
                 printed_pharmacy_price: parseFloat(price) || null,

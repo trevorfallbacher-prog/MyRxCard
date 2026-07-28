@@ -59,13 +59,17 @@
   // never one carried over from a previous page view.
   var _recordId = null;
   function recordId()      { return _recordId; }
-  function setRecordId(id) { _recordId = id ? String(id) : null; if (!id) _pending = null; }
+  function setRecordId(id) { _recordId = id ? String(id) : null; if (!id) { _pending = null; _platforms = []; } }
   function touch()         { /* no-op: id is page-load scoped, nothing to refresh */ }
 
   // While a create (POST) is in flight, _pending resolves to the new row id.
   // A print/save fired right after a search waits on this so it patches the
   // search row instead of racing ahead and creating its own row.
   var _pending = null;
+
+  // Card actions taken on the CURRENT row, accumulated so `platform` reads e.g.
+  // "physical, apple, google" when the user does more than one. Reset per row.
+  var _platforms = [];
 
   // Base fields written when the row is first created.
   function baseFields() {
@@ -134,11 +138,25 @@
 
   function log(fields, opts) {
     opts = opts || {};
+    fields = fields || {};
+
+    // Accumulate card-action platforms on the current row: a physical print +
+    // an Apple save + a Google save become platform "physical, apple, google"
+    // instead of overwriting each other. (Reset when a new search starts a row.)
+    if (fields.platform) {
+      var pl = String(fields.platform).toLowerCase().trim();
+      if (pl && _platforms.indexOf(pl) === -1) _platforms.push(pl);
+      var merged = {};
+      for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) merged[k] = fields[k];
+      merged.platform = _platforms.join(', ');
+      fields = merged;
+    }
 
     // Every drug search starts a NEW row and becomes the current row.
     if (opts.newRow) {
-      _recordId = null;                    // the new search supersedes the prior row
-      _pending  = createRow(fields, opts);
+      _recordId  = null;                   // the new search supersedes the prior row
+      _platforms = [];                     // fresh card-action list for the new row
+      _pending   = createRow(fields, opts);
       return;
     }
     // Print / card save -> attach to the CURRENT search row if we have its id.
@@ -195,7 +213,7 @@
     var printBtn = t.closest('#rxPrintBtn, [data-rxprint]');
     if (printBtn) {
       if (debounced('print')) return;
-      log({ printed: true });
+      log({ printed: true, platform: 'physical' });
       return;
     }
   }, true);
