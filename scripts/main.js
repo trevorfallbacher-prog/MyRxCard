@@ -1310,12 +1310,16 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         pharmacyListDiv.innerHTML = ''; return;
     }
 
-    // Partner-group pool (pharmacy pages) — cleaned & sorted; these are the
-    // partner's own pharmacies at their contracted price, used for the pin.
+    // Partner-group pool — cleaned & sorted; these are the partner's own
+    // pharmacies at their contracted price. Do NOT run the SD outlier filter
+    // here: the partner's negotiated price is often the LOWEST in the area
+    // (e.g. Rochester Tier-1 at $1052.56 vs a ~$1075 field), so the filter would
+    // discard them as "low outliers" — which is exactly what left the pin empty.
+    // cleanPharmacyRows already drops the absurd/no-price rows.
     let partnerPharmacies = null;
     if (partnerRaw && partnerRaw.length) {
-        const pv = collapseByChain(cleanPharmacyRows(partnerRaw));
-        partnerPharmacies = removeOutliersUsingSD(pv, 1.5).sort((a, b) => a.PatientPay - b.PatientPay);
+        partnerPharmacies = collapseByChain(cleanPharmacyRows(partnerRaw))
+            .sort((a, b) => a.PatientPay - b.PatientPay);
     }
 
     // Feature the cheapest Tier-1 pharmacy per pricing group, ONE slot per group,
