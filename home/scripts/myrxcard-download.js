@@ -520,12 +520,12 @@
     setTimeout(doPrint, 1200);
   });
 
-  // --- Wallet save tracking → Xano wallet_events ---
+  // --- Wallet save tracking → Xano search_events (event_type:'wallet_save') ---
   // Both badges are <a> navigations, so use sendBeacon (survives the unload
   // when Apple opens the pass in the same tab). Captures platform, session,
   // the source page, and the partner slug from /s/<slug> or /p/<slug>.
   (function(){
-    var XANO = "https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh/wallet_events";
+    var XANO = "https://xy2f-yrzu-6a37.n7d.xano.io/api:w59maQEh/search_events";
     function sessionId(){
       var id = localStorage.getItem('myrxcard_session_id');
       if(!id){
@@ -546,7 +546,7 @@
     var slug = m ? decodeURIComponent(m[1]) : '';
     function logWallet(platform){
       var payload = JSON.stringify({
-        platform: platform, session_id: sessionId(),
+        event_type: 'wallet_save', platform: platform, session_id: sessionId(),
         source_url: location.href, source_domain: location.hostname, source_path: location.pathname,
         partner_slug: slug, device_type: device, browser: browser
       });

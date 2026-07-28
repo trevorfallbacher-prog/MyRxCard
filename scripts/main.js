@@ -1307,6 +1307,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     const firstPharmacyIsFeatured = featuredPharmacies.length > 0 && firstPharmacy === featuredPharmacies[0];
 
     trackSearch({
+        event_type:             'search',
         session_id:             SESSION_ID,
         source_url:             SOURCE_URL,
         source_domain:          SOURCE_DOMAIN,
