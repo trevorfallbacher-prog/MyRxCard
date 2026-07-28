@@ -328,6 +328,30 @@ async function detectLocation() {
     displayLocation(userZip, userCity, userState, userRadius);
 }
 
+// ---- Compatibility bridge for the standalone /s/ location widget ----
+// That widget is its own Webflow embed that reads and writes location state
+// through window._rxState (userZip/… and displayLocation/detectByBrowser/
+// saveLocationToLocalStorage/triggerSearch). The old engine defined _rxState;
+// main.js keeps location in closures, so without this bridge the widget polls
+// _rxState.userZip forever and stays stuck on "Detecting location…". The
+// getters/setters bind to main.js's own variables, so both share one source
+// of truth (a ZIP the user types in the widget flows into the next search).
+window._rxState = window._rxState || {};
+Object.defineProperties(window._rxState, {
+    userZip:          { get: () => userZip,          set: v => { userZip = v; },          configurable: true },
+    userCity:         { get: () => userCity,         set: v => { userCity = v; },         configurable: true },
+    userState:        { get: () => userState,        set: v => { userState = v; },        configurable: true },
+    userRadius:       { get: () => userRadius,       set: v => { userRadius = v; },       configurable: true },
+    ipDetectedZip:    { get: () => ipDetectedZip,    set: v => { ipDetectedZip = v; },    configurable: true },
+    ipDetectedCity:   { get: () => ipDetectedCity,   set: v => { ipDetectedCity = v; },   configurable: true },
+    ipDetectedState:  { get: () => ipDetectedState,  set: v => { ipDetectedState = v; },  configurable: true },
+    ipDetectedSource: { get: () => ipDetectedSource, set: v => { ipDetectedSource = v; }, configurable: true }
+});
+window._rxState.displayLocation            = displayLocation;
+window._rxState.detectByBrowser            = detectByBrowser;
+window._rxState.saveLocationToLocalStorage = saveLocationToLocalStorage;
+window._rxState.triggerSearch              = triggerSearch;
+
 // ---- Boot ----
 
 document.addEventListener('DOMContentLoaded', function () {
