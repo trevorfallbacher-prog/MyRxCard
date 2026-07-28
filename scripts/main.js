@@ -22,6 +22,24 @@ function getGroupNum() {
     return groupNum || 'TPD001';
 }
 
+// ---- Per-micropage behavior, provided inline by the Webflow page ----
+// PAGE_TYPE:
+//   'group'    (default) — feature the lowest Tier-1 pharmacy per pricing group
+//                          (the /s/ general-search behavior)
+//   'pharmacy'           — feature the partner's own branded pharmacies, matched
+//                          against PARTNER_BRAND_CSV (the /p/ pharmacy behavior)
+// ALL_CHAINS_HIDE 'true' drops blanket "ALLCHAINS CASH" rows.
+const PAGE_TYPE         = String((typeof window !== 'undefined' && window.PAGE_TYPE) || 'group').toLowerCase();
+const PARTNER_BRAND_CSV = String((typeof window !== 'undefined' && window.PARTNER_BRAND_CSV) || '').trim();
+const ALL_CHAINS_HIDE   = String((typeof window !== 'undefined' && window.ALL_CHAINS_HIDE) || '').trim().toLowerCase() === 'true';
+
+// Does this pharmacy's name contain any of the partner's brand tokens?
+function isBrandMatch(pharmacy, brandCsv) {
+    const name = (pharmacy?.Pharmacy?.Name || '').toUpperCase();
+    if (!name || !brandCsv) return false;
+    return brandCsv.split(',').map(s => s.trim().toUpperCase()).filter(Boolean).some(tok => name.includes(tok));
+}
+
 const inputField = document.getElementById('inputDrugs');
 const suggestionsDiv = document.getElementById('drugSuggestions');
 const dosageDropdown = document.getElementById('dosageDropdown');
@@ -1188,6 +1206,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
             if (!Number.isFinite(pay) || pay <= 0 || pay >= NO_PRICE) continue;
             if (tier === '9999' || tier === '')                       continue;
             if (!r?.Pharmacy?.Name)                                    continue;
+            if (ALL_CHAINS_HIDE && String(r?.Pricing?.CostCalculatorRuleName || '').toUpperCase() === 'ALLCHAINS CASH') continue;
             const key = String(r.Pharmacy.Npi || '').trim() ||
                         `${r.Pharmacy.Name}|${r.Pharmacy.Address1 || ''}`;
             const row  = { ...r, PatientPay: pay };
@@ -1218,22 +1237,30 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
         pharmacyListDiv.innerHTML = ''; return;
     }
 
-    const tier1             = filteredPharmacies.filter(p => p.Pharmacy?.Tier === '1');
-    const uniqueGroups      = new Set(tier1.map(p => p.Pricing?.CostCalculatorRuleName || 'UNKNOWN'));
-    const multipleGroupsPresent = uniqueGroups.size > 1;
-    const seenGroups        = new Set();
-    const featuredPharmacies = [];
+    // Which pharmacies get "featured" depends on the micropage:
+    //  • pharmacy pages feature the partner's own branded pharmacies
+    //  • group pages feature the lowest Tier-1 pharmacy per pricing group
+    let featuredPharmacies = [];
+    let multipleGroupsPresent = false;
 
-    for (const pharmacy of filteredPharmacies) {
-        if (pharmacy.Pharmacy?.Tier === '1') {
-            const group = pharmacy.Pricing?.CostCalculatorRuleName || 'UNKNOWN';
-            if (multipleGroupsPresent) {
-                if (!seenGroups.has(group)) { seenGroups.add(group); featuredPharmacies.push(pharmacy); }
-            } else {
-                featuredPharmacies.push(pharmacy);
+    if (PAGE_TYPE === 'pharmacy' && PARTNER_BRAND_CSV) {
+        featuredPharmacies = filteredPharmacies.filter(p => isBrandMatch(p, PARTNER_BRAND_CSV)).slice(0, 3);
+    } else {
+        const tier1        = filteredPharmacies.filter(p => p.Pharmacy?.Tier === '1');
+        const uniqueGroups = new Set(tier1.map(p => p.Pricing?.CostCalculatorRuleName || 'UNKNOWN'));
+        multipleGroupsPresent = uniqueGroups.size > 1;
+        const seenGroups   = new Set();
+        for (const pharmacy of filteredPharmacies) {
+            if (pharmacy.Pharmacy?.Tier === '1') {
+                const group = pharmacy.Pricing?.CostCalculatorRuleName || 'UNKNOWN';
+                if (multipleGroupsPresent) {
+                    if (!seenGroups.has(group)) { seenGroups.add(group); featuredPharmacies.push(pharmacy); }
+                } else {
+                    featuredPharmacies.push(pharmacy);
+                }
             }
+            if (featuredPharmacies.length === 3) break;
         }
-        if (featuredPharmacies.length === 3) break;
     }
 
     const featuredNpiSet    = new Set(featuredPharmacies.map(p => p.Pharmacy?.Npi));
