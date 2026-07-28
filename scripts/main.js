@@ -129,6 +129,9 @@ const SOURCE_DOMAIN = window.location.hostname;
 const SOURCE_PATH   = window.location.pathname;
 
 async function trackSearch(data) {
+    // Prefer the shared session tracker: one row per session, create-or-patch.
+    if (window.rxTrack) { hasPrinted = false; window.rxTrack.log(data); return; }
+    // Fallback (rxtrack.js not loaded): legacy one-row-per-search behavior.
     try {
         const response = await fetch(`${XANO_BASE}/search_events`, {
             method: 'POST',
@@ -142,6 +145,7 @@ async function trackSearch(data) {
 }
 
 async function updateSearchRecord(data) {
+    if (window.rxTrack) { window.rxTrack.log(data); return; }
     if (!currentSearchRecordId) return;
     try {
         await fetch(`${XANO_BASE}/search_events/${currentSearchRecordId}`, {
