@@ -1448,7 +1448,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     const _rxHost      = document.getElementById('rx-results');
     if (PAGE_TYPE === 'pharmacy' && (_rxHost || (_othersBox && _pharmToggle))) {
         renderPharmacyPinnedLayout(featuredPharmacies, regularPharmacies, _othersBox, _pharmToggle,
-            { drugName: resolvedDrugName, dosage: resolvedDosage, form: resolvedForm, quantity });
+            { drugName: resolvedDrugName, dosage: resolvedDosage, form: resolvedForm, quantity, ndc: selectedDrug?.Ndc || null });
     } else if (pharmacyListDiv) {
     pharmacyListDiv.innerHTML = displayPharmacies
         .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
@@ -1506,6 +1506,7 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
     // and the engine renders the entire results block inside it — both
     // columns, toggle, others — fully self-styled. No template boxes, no
     // fixed-height traps, nothing else to wire in Webflow.
+    updateSuggestPrice(featured, others, meta);
     const rxHost = document.getElementById('rx-results');
     if (rxHost) { renderRxResults(rxHost, featured, others, meta); return; }
     // The pinned card lives in #pinnedPharmacyList on /s/ pages and #pharmacyList
@@ -1661,10 +1662,13 @@ function renderRxResults(host, featured, others, meta) {
       </div>
       ${others.length ? `
       <div style="margin-top:22px">
-        <label style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:14px;color:#111">
-          <input type="checkbox" id="rx-others-toggle"${hasPin ? '' : ' checked'} style="width:20px;height:20px;accent-color:currentColor;cursor:pointer">
-          Show Other Pharmacies
-        </label>
+        <div style="display:flex;align-items:center;gap:12px">
+          <label class="switch">
+            <input type="checkbox" id="rx-others-toggle"${hasPin ? '' : ' checked'}>
+            <span class="slider round"></span>
+          </label>
+          <span style="font-weight:600">Show Other Pharmacies</span>
+        </div>
         <div id="rx-others" style="display:${hasPin ? 'none' : 'block'};margin-top:12px">${rows}</div>
       </div>` : ''}`;
     const tgl = document.getElementById('rx-others-toggle');
@@ -1676,11 +1680,156 @@ function renderRxResults(host, featured, others, meta) {
         if (el && !host.contains(el)) {
             el.innerHTML = '';
             el.style.display = 'none';
+            const lbl = el.closest('label');
+            if (lbl && !lbl.contains(host)) {
+                lbl.style.display = 'none';
+                if (lbl.nextElementSibling && lbl.nextElementSibling.tagName === 'SPAN') lbl.nextElementSibling.style.display = 'none';
+            }
             const w = el.closest('.featured-pharmacy-results, .pharmacy_wrapper-member-copy, .pinned_pharmacy_wrapper-member');
             if (w && !w.contains(host)) w.style.display = 'none';
         }
     }
 }
+
+/* ---- Suggest a Price Decrease (ported from the original DOM-Code) ----
+   The page supplies the modal HTML (#suggest-price-btn, #price-decrease-*,
+   #pd-*) and window.FORMSPREE_URL; the engine shows the button when a
+   competitor beat the pinned price, fills the modal, validates, submits to
+   Formspree and plays the success overlay. */
+const rxFormspree = () => String((typeof window !== 'undefined' && window.FORMSPREE_URL) || '').trim();
+
+function updateSuggestPrice(featured, others, meta) {
+    const btn = document.getElementById('suggest-price-btn');
+    if (!btn) return;
+    const pinnedPrice = featured.length ? parseFloat(featured[0].Pricing?.PatientPay) : null;
+    const lowestOther = others.length ? parseFloat(others[0].Pricing?.PatientPay) : null;
+    const competitorIsCheaper = pinnedPrice != null && lowestOther != null && lowestOther < pinnedPrice;
+    if (rxFormspree() && competitorIsCheaper) {
+        btn.style.display = 'inline-block';
+        btn._priceDecreaseContext = {
+            drugName:           meta.drugName,
+            ndc:                meta.ndc || '',
+            pinnedPrice,
+            pinnedPharmacyName: toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(featured[0].Pharmacy?.Name || '')),
+            competitors:        others.slice(0, 9)
+        };
+    } else {
+        btn.style.display = 'none';
+        btn._priceDecreaseContext = null;
+    }
+}
+
+(function initPriceDecreaseModal() {
+    let _pinPrice = null, _pinName = null;
+    const $id = (id) => document.getElementById(id);
+    function pdOpen(ctx) {
+        const overlay = $id('price-decrease-overlay');
+        if (!overlay) return;
+        const pdForm = $id('price-decrease-form'), pdError = $id('pd-error'),
+              pdCompSec = $id('pd-competitor-section'), pdComp = $id('pd-competitor');
+        if (pdForm)    pdForm.reset();
+        if (pdError)   pdError.textContent = '';
+        if (pdCompSec) pdCompSec.style.display = 'none';
+        const so = $id('pd-success-overlay'), ca = $id('pd-confetti-anim'), sa = $id('pd-streamer-anim');
+        if (so) { so.style.display = 'none'; so.style.opacity = '0'; }
+        if (ca && ca.stop) ca.stop();
+        if (sa && sa.stop) sa.stop();
+        const dn = $id('pd-drug-name'), ne = $id('pd-ndc');
+        if (dn) dn.value = ctx.drugName || '';
+        if (ne) ne.value = ctx.ndc || '';
+        if (pdComp) {
+            pdComp.innerHTML = '<option value="">Select a pharmacy</option>';
+            (ctx.competitors || []).forEach((p) => {
+                const opt = document.createElement('option');
+                const nm = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Name || ''));
+                const pr = formatNumberWithCommas(p.Pricing?.PatientPay);
+                opt.value = nm;
+                opt.textContent = nm + ' — $' + pr;
+                opt.dataset.price = pr;
+                pdComp.appendChild(opt);
+            });
+        }
+        _pinPrice = ctx.pinnedPrice != null ? ctx.pinnedPrice : null;
+        _pinName  = ctx.pinnedPharmacyName || null;
+        const modalEl = $id('price-decrease-modal');
+        overlay.style.display = 'flex'; overlay.style.opacity = '0';
+        if (modalEl) modalEl.style.transform = 'scale(0.95)';
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            overlay.style.opacity = '1';
+            if (modalEl) modalEl.style.transform = 'scale(1)';
+        }));
+        document.body.style.overflow = 'hidden';
+    }
+    function pdClose() {
+        const overlay = $id('price-decrease-overlay'); if (!overlay) return;
+        const modalEl = $id('price-decrease-modal');
+        overlay.style.opacity = '0';
+        if (modalEl) modalEl.style.transform = 'scale(0.95)';
+        setTimeout(() => { overlay.style.display = 'none'; }, 300);
+        document.body.style.overflow = '';
+    }
+    document.addEventListener('click', (e) => {
+        if (!e.target || !e.target.closest) return;
+        if (e.target.closest('#suggest-price-btn')) {
+            const btn = $id('suggest-price-btn'), ctx = btn && btn._priceDecreaseContext;
+            if (ctx) pdOpen(ctx);
+            return;
+        }
+        if (e.target.closest('#price-decrease-close') || e.target.closest('#price-decrease-cancel')) { pdClose(); return; }
+        const overlay = $id('price-decrease-overlay');
+        if (overlay && e.target === overlay) pdClose();
+    });
+    document.addEventListener('change', (e) => {
+        if (e.target && e.target.id === 'pd-reason') {
+            const sec = $id('pd-competitor-section');
+            if (sec) sec.style.display = e.target.value === 'better-price' ? 'block' : 'none';
+        }
+    });
+    document.addEventListener('submit', async (e) => {
+        if (!e.target || e.target.id !== 'price-decrease-form') return;
+        e.preventDefault();
+        const pdReason = $id('pd-reason'), pdComp = $id('pd-competitor'), pdError = $id('pd-error');
+        const nursingUnit = $id('pd-nursing-unit') ? $id('pd-nursing-unit').value.trim() : '';
+        const drugName = $id('pd-drug-name') ? $id('pd-drug-name').value.trim() : '';
+        const ndc = $id('pd-ndc') ? $id('pd-ndc').value.trim() : '';
+        const reason = pdReason ? pdReason.value : '';
+        const competitor = pdComp ? pdComp.value : '';
+        const careManager = $id('pd-care-manager') ? $id('pd-care-manager').value.trim() : '';
+        const insChecked = document.querySelector('input[name="pd-insurance"]:checked');
+        const insurance = insChecked ? insChecked.value : '';
+        const errors = [];
+        if (!reason) errors.push('Please select a reason for the request.');
+        if (reason === 'better-price' && !competitor) errors.push('Please select a competing pharmacy.');
+        if (!insurance) errors.push('Please select an insurance status.');
+        if (pdError) pdError.textContent = errors.join(' ');
+        if (errors.length) return;
+        const selOpt = pdComp && pdComp.options[pdComp.selectedIndex];
+        const competitorPrice = (reason === 'better-price' && selOpt && selOpt.dataset.price) ? '$' + selOpt.dataset.price : null;
+        const pinnedPharmacyPrice = _pinPrice != null ? '$' + formatNumberWithCommas(_pinPrice) : null;
+        const entries = { nursingUnit, careManager, insurance, drugName, ndc, reason, pinnedPharmacyName: _pinName || null, pinnedPharmacyPrice };
+        if (reason === 'better-price' && competitor) entries.competitor = competitor;
+        if (reason === 'better-price' && competitorPrice) entries.competitorPrice = competitorPrice;
+        const payload = {};
+        for (const k in entries) if (entries[k] != null && entries[k] !== '') payload[k] = entries[k];
+        try {
+            const res = await fetch(rxFormspree(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                const so = $id('pd-success-overlay'), ca = $id('pd-confetti-anim'), sa = $id('pd-streamer-anim');
+                if (ca && ca.seek) { ca.seek(0); ca.play(); }
+                if (sa && sa.seek) { sa.seek(0); sa.play(); }
+                if (so) { so.style.display = 'flex'; requestAnimationFrame(() => requestAnimationFrame(() => { so.style.opacity = '1'; })); }
+                if (window.rxTrack) window.rxTrack.log({ search_feedback: 'price_decrease_requested', feedback_comment: reason });
+                setTimeout(() => { pdClose(); }, 3000);
+            } else if (pdError) pdError.textContent = 'Submission failed. Please try again.';
+        } catch (err) {
+            if (pdError) pdError.textContent = 'Something went wrong. Please try again.';
+        }
+    });
+})();
 
 function initializePharmacyCardListeners() {
     const pharmacyCards = document.querySelectorAll('.pharmacy-card');
@@ -1724,9 +1873,14 @@ function initializePharmacyCardListeners() {
             ripple.className = 'ripple';
             const rect = card.getBoundingClientRect();
             const size = Math.max(rect.width, rect.height);
-            ripple.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX-rect.left-size/2}px;top:${e.clientY-rect.top-size/2}px`;
+            // absolute + timed cleanup: without the ripple animation CSS,
+            // animationend never fires — the ripple persisted as a 318px BLOCK
+            // child and inflated the card into a wall of dead space
+            ripple.style.cssText = `position:absolute;border-radius:50%;pointer-events:none;width:${size}px;height:${size}px;left:${e.clientX-rect.left-size/2}px;top:${e.clientY-rect.top-size/2}px`;
+            if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
             card.appendChild(ripple);
             ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+            setTimeout(() => ripple.remove(), 900);
 
             if (selectedId !== null && selectedId !== id) {
                 const prev = document.querySelector(`[data-npi="${selectedId}"]`);
