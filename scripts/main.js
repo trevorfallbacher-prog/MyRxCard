@@ -1516,24 +1516,20 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
             // ONE card only: a partner's contract price is identical across
             // their locations, so extra pins are pure noise. The full featured
             // list still feeds tracking (featured_count) untouched.
+            // Price ONLY. The pinned boxes on these templates are fixed-height
+            // (~150px) with overflow:visible — a full card (491px) spilled out
+            // and hovered over the page. The partner name is already the box's
+            // heading and the price is contract-flat, so the number is the card.
             pinnedBox.innerHTML = featured.slice(0, 1).map((best, i) => {
                 const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Name || ''));
                 const price = formatNumberWithCommas(best.Pricing?.PatientPay);
-                const addr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Address1 || ''));
-                const addr2 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Address2 || ''));
-                const city  = toTitleCaseWithSpecialRule(best.Pharmacy?.City || '');
-                const state = best.Pharmacy?.State || '';
-                const zip   = (best.Pharmacy?.Zip || '').substring(0, 5);
                 return `
                     <div class="pharmacy-card" data-npi="${best.Pharmacy?.Npi || ''}"
                          data-pharmacy-name="${name}" data-price="${price}"
                          data-drug-name="${meta.drugName}" data-dosage="${meta.dosage}"
-                         data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="${i}">
-                      <h1 class="price">$${price}</h1>
-                      <h4>${name}</h4>
-                      <p>${addr1} ${addr2}</p>
-                      <p>${city}, ${state} ${zip}</p>
-                      ${i === 0 && compareMsg ? `<p class="comparative-pricing">${compareMsg}</p>` : ''}
+                         data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="${i}"
+                         style="padding:0">
+                      <h1 class="price" style="margin:0">$${price}</h1>
                     </div>`;
             }).join('');
         } else {
