@@ -1513,7 +1513,10 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
                 const diff = lowestOther - pinnedPrice;
                 if (pinnedPrice <= lowestOther && diff > 0) compareMsg = `🔥 Patient Saves $${formatNumberWithCommas(diff)} 🔥`;
             }
-            pinnedBox.innerHTML = featured.map((best, i) => {
+            // ONE card only: a partner's contract price is identical across
+            // their locations, so extra pins are pure noise. The full featured
+            // list still feeds tracking (featured_count) untouched.
+            pinnedBox.innerHTML = featured.slice(0, 1).map((best, i) => {
                 const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Name || ''));
                 const price = formatNumberWithCommas(best.Pricing?.PatientPay);
                 const addr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Address1 || ''));
