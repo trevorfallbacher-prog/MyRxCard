@@ -1603,7 +1603,7 @@ function renderRxResults(host, featured, others, meta) {
     host.style.cssText += ';height:auto;min-height:0;max-height:none;width:100%;display:block;overflow:visible';
     const partner  = String((typeof window !== 'undefined' && window.PARTNER_NAME) || '').trim();
     const groupNum = getGroupNum();
-    const box = 'box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:150px;padding:18px 22px;background:#f0f6fb;border:1px solid #b9d2ea;border-radius:6px;text-align:center';
+    const box = 'box-sizing:border-box;display:block;padding:16px 22px;background:#f0f6fb;border:1px solid #b9d2ea;border-radius:6px;text-align:center';
     const best = featured[0] || null;
     let pinInner;
     if (best) {
@@ -1618,11 +1618,11 @@ function renderRxResults(host, featured, others, meta) {
             <div class="pharmacy-card" data-npi="${best.Pharmacy?.Npi || ''}"
                  data-pharmacy-name="${name}" data-price="${price}"
                  data-drug-name="${meta.drugName}" data-dosage="${meta.dosage}"
-                 data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="0"
-                 style="display:block;padding:0;margin:0;background:none;border:none;box-shadow:none">
-              <div style="font-size:36px;font-weight:800;line-height:1.1;color:currentColor">${price}</div>
-              <div style="font-size:13.5px;font-weight:600;margin-top:5px;opacity:.85">${name}${city ? ' &middot; ' + city + (st ? ', ' + st : '') : ''}</div>
-              ${diff > 0 ? `<div style="font-size:13px;font-weight:700;margin-top:7px">&#128293; Patient Saves ${formatNumberWithCommas(diff)} &#128293;</div>` : ''}
+                 data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="0">
+              <h1 class="price">$${price}</h1>
+              <h4>${name}</h4>
+              ${city ? `<p>${city}${st ? ', ' + st : ''}</p>` : ''}
+              ${diff > 0 ? `<p class="comparative-pricing">&#128293; Patient Saves $${formatNumberWithCommas(diff)} &#128293;</p>` : ''}
             </div>`;
     } else {
         pinInner = `<div style="font-size:14px;opacity:.7">No pharmacies found in your area.</div>`;
@@ -1634,23 +1634,24 @@ function renderRxResults(host, featured, others, meta) {
         const st2 = p.Pharmacy?.State || '';
         const pr = formatNumberWithCommas(p.Pricing?.PatientPay);
         return `
-          <div class="pharmacy-card1" style="display:flex;justify-content:space-between;align-items:center;gap:14px;box-sizing:border-box;padding:13px 18px;margin-bottom:10px;background:#fff;border:1.5px solid rgba(0,0,0,.12);border-radius:8px">
-            <div style="text-align:left;min-width:0">
-              <div style="font-weight:700;font-size:15px;color:currentColor">${nm}</div>
-              <div style="font-size:12.5px;opacity:.75">${a1}${a1 && ct ? ' &middot; ' : ''}${ct}${st2 ? ', ' + st2 : ''}</div>
+          <div class="pharmacy-card1">
+            <div class="pharmacy-details">
+              <h4>${nm}</h4>
+              <p>${a1}</p>
+              <p>${ct}${st2 ? ', ' + st2 : ''}</p>
             </div>
-            <div style="font-weight:800;font-size:20px;white-space:nowrap;color:currentColor">${pr}</div>
+            <div class="pharmacy-price"><h1 class="price">$${pr}</h1></div>
           </div>`;
     }).join('');
     const hasPin = !!best;
     host.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:28px;align-items:start">
         <div>
-          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">${rxEsc(partner ? partner + ' Price:' : 'Pharmacy Price:')}</h3>
+          <h3 style="margin:0 0 10px">${rxEsc(partner ? partner + ' Price:' : 'Pharmacy Price:')}</h3>
           <div style="${box}">${pinInner}</div>
         </div>
         <div>
-          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">How to Process Claim:</h3>
+          <h3 style="margin:0 0 10px">How to Process Claim:</h3>
           <div style="${box};font-weight:700;color:currentColor;line-height:1.8;font-size:16px">
             <div>BIN: 018877</div>
             <div>PCN: AHC001</div>
@@ -1668,10 +1669,16 @@ function renderRxResults(host, featured, others, meta) {
       </div>` : ''}`;
     const tgl = document.getElementById('rx-others-toggle');
     if (tgl) tgl.onchange = () => { const o = document.getElementById('rx-others'); if (o) o.style.display = tgl.checked ? 'block' : 'none'; };
-    // silence legacy containers so nothing double-renders on pages mid-migration
-    for (const id of ['pharmacyList', 'pinnedPharmacyList', 'filtered-pharmacy-list']) {
+    // legacy leftovers: hide them AND their fixed-height wrappers — an emptied
+    // 300px box is still 300px of dead space under the new block
+    for (const id of ['pharmacyList', 'pinnedPharmacyList', 'filtered-pharmacy-list', 'pharmacy-toggle']) {
         const el = document.getElementById(id);
-        if (el && !host.contains(el)) el.innerHTML = '';
+        if (el && !host.contains(el)) {
+            el.innerHTML = '';
+            el.style.display = 'none';
+            const w = el.closest('.featured-pharmacy-results, .pharmacy_wrapper-member-copy, .pinned_pharmacy_wrapper-member');
+            if (w && !w.contains(host)) w.style.display = 'none';
+        }
     }
 }
 
