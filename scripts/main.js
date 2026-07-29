@@ -1598,6 +1598,7 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
 //   Show Other Pharmacies (toggle) -> rows
 // Everything inline-styled; accent text uses currentColor, so setting the
 // div's text color in Webflow (e.g. via the partner's dynamic color) themes it.
+const rxEsc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function renderRxResults(host, featured, others, meta) {
     host.style.cssText += ';height:auto;min-height:0;max-height:none;width:100%;display:block;overflow:visible';
     const partner  = String((typeof window !== 'undefined' && window.PARTNER_NAME) || '').trim();
@@ -1645,7 +1646,7 @@ function renderRxResults(host, featured, others, meta) {
     host.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:28px;align-items:start">
         <div>
-          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">${esc(partner ? partner + ' Price:' : 'Pharmacy Price:')}</h3>
+          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">${rxEsc(partner ? partner + ' Price:' : 'Pharmacy Price:')}</h3>
           <div style="${box}">${pinInner}</div>
         </div>
         <div>
@@ -1653,7 +1654,7 @@ function renderRxResults(host, featured, others, meta) {
           <div style="${box};font-weight:700;color:currentColor;line-height:1.8;font-size:16px">
             <div>BIN: 018877</div>
             <div>PCN: AHC001</div>
-            <div>Group ID: ${esc(groupNum)}</div>
+            <div>Group ID: ${rxEsc(groupNum)}</div>
           </div>
         </div>
       </div>
