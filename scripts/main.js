@@ -1445,7 +1445,8 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     // combined list (group pages).
     const _othersBox   = document.getElementById('filtered-pharmacy-list');
     const _pharmToggle = document.getElementById('pharmacy-toggle');
-    if (PAGE_TYPE === 'pharmacy' && _othersBox && _pharmToggle) {
+    const _rxHost      = document.getElementById('rx-results');
+    if (PAGE_TYPE === 'pharmacy' && (_rxHost || (_othersBox && _pharmToggle))) {
         renderPharmacyPinnedLayout(featuredPharmacies, regularPharmacies, _othersBox, _pharmToggle,
             { drugName: resolvedDrugName, dosage: resolvedDosage, form: resolvedForm, quantity });
     } else {
@@ -1501,6 +1502,12 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 // the remaining pharmacies in #filtered-pharmacy-list, and wire the toggle.
 // Structure matches the pages' existing CSS (.pharmacy-card / .pharmacy-card1).
 function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
+    // THE clean contract: the page provides ONE empty <div id="rx-results">
+    // and the engine renders the entire results block inside it — both
+    // columns, toggle, others — fully self-styled. No template boxes, no
+    // fixed-height traps, nothing else to wire in Webflow.
+    const rxHost = document.getElementById('rx-results');
+    if (rxHost) { renderRxResults(rxHost, featured, others, meta); return; }
     // The pinned card lives in #pinnedPharmacyList on /s/ pages and #pharmacyList
     // on /p/ pages — target whichever exists, preferring the dedicated pinned box.
     const pinnedBox = document.getElementById('pinnedPharmacyList') || document.getElementById('pharmacyList');
@@ -1563,6 +1570,7 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
         }
     }
 
+    if (!othersBox || !toggle) return;
     othersBox.innerHTML = others.slice(0, 9).map(p => {
         const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Name || 'Unknown'));
         const addr1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Address1 || ''));
@@ -1582,6 +1590,88 @@ function renderPharmacyPinnedLayout(featured, others, othersBox, toggle, meta) {
     toggle.checked = autoShow;
     othersBox.style.display = autoShow ? 'block' : 'none';
     toggle.onchange = () => { othersBox.style.display = toggle.checked ? 'block' : 'none'; };
+}
+
+// Renders the complete pharmacy-page results block into #rx-results:
+//   [ {Partner} Price:        ]  [ How to Process Claim:      ]
+//   [  $price / name / saves  ]  [  BIN / PCN / Group ID      ]
+//   Show Other Pharmacies (toggle) -> rows
+// Everything inline-styled; accent text uses currentColor, so setting the
+// div's text color in Webflow (e.g. via the partner's dynamic color) themes it.
+function renderRxResults(host, featured, others, meta) {
+    host.style.cssText += ';height:auto;min-height:0;max-height:none;width:100%;display:block;overflow:visible';
+    const partner  = String((typeof window !== 'undefined' && window.PARTNER_NAME) || '').trim();
+    const groupNum = getGroupNum();
+    const box = 'box-sizing:border-box;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:150px;padding:18px 22px;background:#f0f6fb;border:1px solid #b9d2ea;border-radius:6px;text-align:center';
+    const best = featured[0] || null;
+    let pinInner;
+    if (best) {
+        const price = formatNumberWithCommas(best.Pricing?.PatientPay);
+        const name  = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(best.Pharmacy?.Name || ''));
+        const city  = toTitleCaseWithSpecialRule(best.Pharmacy?.City || '');
+        const st    = best.Pharmacy?.State || '';
+        const pinnedPrice = parseFloat(best.Pricing?.PatientPay);
+        const lowestOther = others.length ? parseFloat(others[0].Pricing?.PatientPay) : null;
+        const diff = (lowestOther != null && Number.isFinite(pinnedPrice)) ? lowestOther - pinnedPrice : 0;
+        pinInner = `
+            <div class="pharmacy-card" data-npi="${best.Pharmacy?.Npi || ''}"
+                 data-pharmacy-name="${name}" data-price="${price}"
+                 data-drug-name="${meta.drugName}" data-dosage="${meta.dosage}"
+                 data-quantity="${meta.quantity}" data-form="${meta.form}" data-index="0"
+                 style="display:block;padding:0;margin:0;background:none;border:none;box-shadow:none">
+              <div style="font-size:36px;font-weight:800;line-height:1.1;color:currentColor">${price}</div>
+              <div style="font-size:13.5px;font-weight:600;margin-top:5px;opacity:.85">${name}${city ? ' &middot; ' + city + (st ? ', ' + st : '') : ''}</div>
+              ${diff > 0 ? `<div style="font-size:13px;font-weight:700;margin-top:7px">&#128293; Patient Saves ${formatNumberWithCommas(diff)} &#128293;</div>` : ''}
+            </div>`;
+    } else {
+        pinInner = `<div style="font-size:14px;opacity:.7">No pharmacies found in your area.</div>`;
+    }
+    const rows = others.slice(0, 9).map((p) => {
+        const nm = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Name || 'Unknown'));
+        const a1 = toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(p.Pharmacy?.Address1 || ''));
+        const ct = toTitleCaseWithSpecialRule(p.Pharmacy?.City || '');
+        const st2 = p.Pharmacy?.State || '';
+        const pr = formatNumberWithCommas(p.Pricing?.PatientPay);
+        return `
+          <div class="pharmacy-card1" style="display:flex;justify-content:space-between;align-items:center;gap:14px;box-sizing:border-box;padding:13px 18px;margin-bottom:10px;background:#fff;border:1.5px solid rgba(0,0,0,.12);border-radius:8px">
+            <div style="text-align:left;min-width:0">
+              <div style="font-weight:700;font-size:15px;color:currentColor">${nm}</div>
+              <div style="font-size:12.5px;opacity:.75">${a1}${a1 && ct ? ' &middot; ' : ''}${ct}${st2 ? ', ' + st2 : ''}</div>
+            </div>
+            <div style="font-weight:800;font-size:20px;white-space:nowrap;color:currentColor">${pr}</div>
+          </div>`;
+    }).join('');
+    const hasPin = !!best;
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:28px;align-items:start">
+        <div>
+          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">${esc(partner ? partner + ' Price:' : 'Pharmacy Price:')}</h3>
+          <div style="${box}">${pinInner}</div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 10px;font-size:22px;font-weight:800;color:#111">How to Process Claim:</h3>
+          <div style="${box};font-weight:700;color:currentColor;line-height:1.8;font-size:16px">
+            <div>BIN: 018877</div>
+            <div>PCN: AHC001</div>
+            <div>Group ID: ${esc(groupNum)}</div>
+          </div>
+        </div>
+      </div>
+      ${others.length ? `
+      <div style="margin-top:22px">
+        <label style="display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:14px;color:#111">
+          <input type="checkbox" id="rx-others-toggle"${hasPin ? '' : ' checked'} style="width:20px;height:20px;accent-color:currentColor;cursor:pointer">
+          Show Other Pharmacies
+        </label>
+        <div id="rx-others" style="display:${hasPin ? 'none' : 'block'};margin-top:12px">${rows}</div>
+      </div>` : ''}`;
+    const tgl = document.getElementById('rx-others-toggle');
+    if (tgl) tgl.onchange = () => { const o = document.getElementById('rx-others'); if (o) o.style.display = tgl.checked ? 'block' : 'none'; };
+    // silence legacy containers so nothing double-renders on pages mid-migration
+    for (const id of ['pharmacyList', 'pinnedPharmacyList', 'filtered-pharmacy-list']) {
+        const el = document.getElementById(id);
+        if (el && !host.contains(el)) el.innerHTML = '';
+    }
 }
 
 function initializePharmacyCardListeners() {
