@@ -1201,6 +1201,11 @@ function collapseByChain(rows) {
     return [...groups.values()].map(g => ({ ...g.best, _chainCount: g.count }));
 }
 
+// Write text into an element IF the page has it. Templates vary per partner —
+// the /p/uwhc page has no selected-* card, and an unguarded write there threw
+// mid-search, killing the results render AND the tracking POST.
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+
 async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     quantity = parseInt(document.getElementById('quantity').value) || 30;
 
@@ -1374,10 +1379,10 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     const resolvedDosage   = selectedDrug?.MedStrength ? `${selectedDrug.MedStrength} ${selectedDrug.Uom}` : 'Unknown Dosage';
     const resolvedForm     = selectedDrug?.DosageForm  || 'Unknown Form';
 
-    document.getElementById('selected-drug-name').textContent = resolvedDrugName;
-    document.getElementById('selected-dosage').textContent    = resolvedDosage;
-    document.getElementById('selected-quantity').textContent  = quantity;
-    document.getElementById('selected-form').textContent      = resolvedForm;
+    setText('selected-drug-name', resolvedDrugName);
+    setText('selected-dosage',    resolvedDosage);
+    setText('selected-quantity',  quantity);
+    setText('selected-form',      resolvedForm);
 
     const firstPharmacy           = displayPharmacies[0];
     const firstPharmacyName       = firstPharmacy ? toTitleCaseWithSpecialRule(trimLastWordIfEndsWithNumber(firstPharmacy.Pharmacy?.Name || '')) : null;
@@ -1662,14 +1667,14 @@ function initializePharmacyCardListeners() {
             const quantity     = card.dataset.quantity;
             const form         = card.dataset.form;
 
-            document.getElementById('selected-pharmacy-name').textContent  = pharmacyName;
-            document.getElementById('selected-price').textContent          = `$${price}`;
-            document.getElementById('selected-pharmacy-name1').textContent = pharmacyName;
-            document.getElementById('selected-price1').textContent         = `$${price}`;
-            document.getElementById('selected-drug-name1').textContent     = drugName;
-            document.getElementById('selected-dosage1').textContent        = dosage;
-            document.getElementById('selected-quantity1').textContent      = quantity;
-            document.getElementById('selected-form1').textContent          = form;
+            setText('selected-pharmacy-name',  pharmacyName);
+            setText('selected-price',          `${price}`);
+            setText('selected-pharmacy-name1', pharmacyName);
+            setText('selected-price1',         `${price}`);
+            setText('selected-drug-name1',     drugName);
+            setText('selected-dosage1',        dosage);
+            setText('selected-quantity1',      quantity);
+            setText('selected-form1',          form);
         });
     });
 
