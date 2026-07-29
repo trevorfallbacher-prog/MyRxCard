@@ -794,8 +794,8 @@ inputField.addEventListener('input', (e) => {
         formDropdown.innerHTML   = '<option value=""></option>';
         quantityField.value = '';
         suggestionsDiv.innerHTML = '';
-        pharmacyListDiv.innerHTML = '';
-        resultsDiv.style.display = 'none';
+        if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
+        if (resultsDiv) resultsDiv.style.display = 'none';
         document.getElementById('generic-alt-banner')?.remove();
         const errorMessageElement = document.getElementById('errorMessage');
         if (errorMessageElement) errorMessageElement.textContent = '';
@@ -1119,7 +1119,7 @@ async function showGenericAlternativesBanner(selectedDrug) {
         " onclick="document.getElementById('generic-alt-banner').remove()">&#x2715;</button>
     `;
 
-    pharmacyListDiv.insertAdjacentElement('beforebegin', banner);
+    (pharmacyListDiv || document.getElementById('rx-results') || document.body).insertAdjacentElement('beforebegin', banner);
 
     document.getElementById('generic-alt-btn').addEventListener('click', () => {
         banner.remove();
@@ -1237,7 +1237,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     });
 
     showLoader();
-    pharmacyListDiv.innerHTML = '';
+    if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
 
     // TPD001 is the general network that carries the broad pharmacy list, so it
     // is ALWAYS queried — it populates the "other options". Whenever a partner
@@ -1265,11 +1265,11 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     const [pharmacies, partnerRaw = null] = await Promise.all(requests);
 
     { const _ld = document.getElementById('loader'); if (_ld) _ld.style.display = 'none'; }
-    resultsDiv.style.display = pharmacies.length > 0 ? 'block' : 'none';
+    if (resultsDiv) resultsDiv.style.display = pharmacies.length > 0 ? 'block' : 'none';
 
     if (pharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found.';
-        pharmacyListDiv.innerHTML = '';
+        if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
         return;
     }
 
@@ -1320,7 +1320,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     if (validPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found with valid pricing.';
-        pharmacyListDiv.innerHTML = ''; return;
+        if (pharmacyListDiv) pharmacyListDiv.innerHTML = ''; return;
     }
 
     const filteredPharmacies = removeOutliersUsingSD(validPharmacies, 1.5);
@@ -1328,7 +1328,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
 
     if (filteredPharmacies.length === 0) {
         if (errorMessageElement) errorMessageElement.textContent = 'No pharmacies found after filtering outliers.';
-        pharmacyListDiv.innerHTML = ''; return;
+        if (pharmacyListDiv) pharmacyListDiv.innerHTML = ''; return;
     }
 
     // Partner-group pool — cleaned & sorted; these are the partner's own
@@ -1449,7 +1449,7 @@ async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     if (PAGE_TYPE === 'pharmacy' && (_rxHost || (_othersBox && _pharmToggle))) {
         renderPharmacyPinnedLayout(featuredPharmacies, regularPharmacies, _othersBox, _pharmToggle,
             { drugName: resolvedDrugName, dosage: resolvedDosage, form: resolvedForm, quantity });
-    } else {
+    } else if (pharmacyListDiv) {
     pharmacyListDiv.innerHTML = displayPharmacies
         .filter(p => p.Pricing?.PatientPay && p.Pharmacy?.Name)
         .map((pharmacy, index) => {
