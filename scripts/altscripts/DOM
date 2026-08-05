@@ -1,5 +1,9 @@
 <script>
-(function () {
+
+  (function () {
+  // ---------- BUILD TAG (so we can confirm THIS script is the one running) ----------
+  console.log('%c[altScripts pricing] BUILD 2026-08-05-A (form-aware Xano overrides) loaded', 'background:#2b6cb0;color:#fff;padding:2px 6px;border-radius:3px');
+
   // ---------- Prepaint HIDE (prevents first-paint flicker) ----------
   const PREPAINT_STYLE_ID = 'prepaint-hide-results';
   (function ensurePrepaintHide() {
@@ -31,12 +35,29 @@
   // ---------- App state ----------
   let drugData = [];
   let recentSearches = [];
-  let userZip = null, userCity = null, userState = null, userRadius = null;
+  // Location is pinned — we only serve pricing for the Milwaukee, WI area.
+  const userZip = '53214';
+  const userRadius = '10';
   let currentNDC = '';            // cleaned NDC (no dashes)
   let currentQuantity = null;     // exact quantity used for the last search
+  let currentSKU = null;          // { name, strength, uom, form, ndcs:[], packSize }
 
-  // Simple in-memory cache for DrugData lookups
+  // Simple in-memory cache for Phoenix CacheDrugData queries (keyed by name)
   const drugsCache = new Map();
+
+  // Xano override caches.
+  //   xanoByKey: Map<`${ndc11}|${qty}`, xanoRow>  — exact NDC + quantity tier.
+  //   xanoByNdc: Map<ndc11, xanoRow[]>            — all active rows per NDC,
+  //              used to recover the NADAC price when the exact quantity tier
+  //              isn't stored but the drug IS on the altScripts formulary.
+  let xanoByKey = null;
+  let xanoByNdc = null;
+  let xanoByNameStrength = null; // Map<`${name}|${strength}`, row[]> — NDC-independent
+  let xanoLoadPromise = null;
+  let xanoLoadedAt = 0;                 // epoch ms of last successful build
+  const XANO_TTL_MS = 60 * 1000;        // re-pull from Xano if older than 60s,
+                                        // so price edits show up without a hard
+                                        // reload (the stale-map bug).
 
   // ---------- Loader (ref-counted to avoid early hide) ----------
   let _loaderCount = 0;
@@ -71,6 +92,9 @@
   function debounce(fn, delay) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), delay); }; }
   function formatNumberWithCommas(num) { const n = parseFloat(num); if (Number.isNaN(n)) return '0.00'; return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
   function toTitleCaseWithSpecialRule(str) { return String(str || '').split(' ').map(w => w.length > 1 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w.toUpperCase()).join(' '); }
+  // API strings go into innerHTML attributes/text — a stray " or < in a drug
+  // or pharmacy name must not truncate the markup (e.g. tape sizes like 24").
+  function escapeHtml(v) { return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
   // ---------- Visibility helpers (use `hidden`) ----------
   function setResultsVisible(isVisible) {
@@ -88,12 +112,109 @@
 
   // ---------- Activate_status gating ----------
   function getActiveStatus(row) {
-    // Your Xano column is now Active_status
     const v = row?.Active_status ?? row?.active_status ?? row?.Active_Status ?? row?.activeStatus ?? '';
-    return String(v).trim();
+    return String(v).replace(/\u00a0/g, ' ').trim().toLowerCase();
   }
+  // A row counts as active UNLESS it explicitly says "inactive". A blank or
+  // missing status is treated as active — many rows have no status value at
+  // all, and dropping them silently deletes a valid price (this was the
+  // Teriflunomide bug: Active_status was undefined, so the $26.60 row got
+  // filtered out and the page fell through to the $1077 network price).
   function isActiveRow(row) {
-    return getActiveStatus(row).toLowerCase() === 'active';
+    return getActiveStatus(row) !== 'inactive';
+  }
+
+  // ---------- NDC normalization ----------
+  function normalizeNDC(ndc) {
+    const digits = String(ndc ?? '').replace(/\D/g, '');
+    if (!digits) return '';
+    return digits.length >= 11 ? digits.slice(-11) : digits.padStart(11, '0');
+  }
+
+  // ---------- Dosage-form normalization ----------
+  // Canonicalizes the dosage form so the name+strength fallback can tell
+  // CREAM and GEL apart. Tazarotene 0.05% exists as BOTH a cream and a gel —
+  // same generic, same strength — so an identity that ignores the form hands
+  // the cream's formulary price to the gel even though the gel isn't on the
+  // formulary at all (NDC 45802-0706-94/-96 is the cream per the FDA NDC
+  // directory). Unknown forms stay '' and act as wildcards, so rows without
+  // form info keep matching exactly as before (the Teriflunomide rescue).
+  const FORM_SYNONYMS = {
+    tablet: 'tablet', tablets: 'tablet', tab: 'tablet', tabs: 'tablet',
+    capsule: 'capsule', capsules: 'capsule', cap: 'capsule', caps: 'capsule',
+    softgel: 'capsule', softgels: 'capsule', gelcap: 'capsule', gelcaps: 'capsule',
+    cream: 'cream', crea: 'cream', crm: 'cream',
+    gel: 'gel', jelly: 'gel',
+    ointment: 'ointment', oint: 'ointment',
+    solution: 'solution', soln: 'solution', sol: 'solution',
+    suspension: 'suspension', susp: 'suspension',
+    lotion: 'lotion', foam: 'foam', spray: 'spray',
+    patch: 'patch', film: 'film',
+    injection: 'injection', injectable: 'injection', inj: 'injection',
+    syrup: 'syrup', elixir: 'elixir', drops: 'drops',
+    suppository: 'suppository', supp: 'suppository',
+    powder: 'powder', granules: 'granules',
+    inhaler: 'inhaler', aerosol: 'aerosol',
+  };
+  function canonicalDosageForm(raw) {
+    const tokens = String(raw ?? '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+    // LAST matching token wins: drug-name strings run "NAME STRENGTH FORM",
+    // so in "FILM-COATED TABLET" or "GEL CAPS" the trailing word is the real
+    // container form and the leading one is just a coating/consistency word.
+    let form = '';
+    for (const t of tokens) {
+      if (Object.prototype.hasOwnProperty.call(FORM_SYNONYMS, t)) form = FORM_SYNONYMS[t];
+    }
+    return form;
+  }
+  // Form for a Xano row: explicit column first, else scan the drug name
+  // ("TAZAROTENE 0.05% CREAM" -> "cream").
+  function xanoRowForm(row) {
+    const explicit = canonicalDosageForm(
+      row?.DosageForm ?? row?.Form ?? row?.dosage_form ?? row?.form ?? ''
+    );
+    if (explicit) return explicit;
+    return canonicalDosageForm(
+      row?.MedDrugName ?? row?.DrugName ?? row?.Drug_Name ?? row?.Name ?? row?.drug_name ?? ''
+    );
+  }
+  // Forms conflict ONLY when both sides resolve to two DIFFERENT topical
+  // forms (cream vs gel vs ointment vs lotion vs foam) — the one family where
+  // the same generic+strength genuinely ships as distinct products at very
+  // different prices. Every other difference (eye DROPS vs SOLUTION, INJ vs
+  // SOLUTION, INHALER vs AEROSOL, tablet vs capsule) is treated as
+  // cross-source labeling variance and allowed to match, exactly like the
+  // pre-form-aware behavior — so no formulary drug can lose its NADAC price
+  // to a wording mismatch.
+  const CONFLICTING_TOPICAL_FORMS = new Set(['cream', 'gel', 'ointment', 'lotion', 'foam']);
+  function formsCompatible(a, b) {
+    if (!a || !b || a === b) return true;
+    return !(CONFLICTING_TOPICAL_FORMS.has(a) && CONFLICTING_TOPICAL_FORMS.has(b));
+  }
+
+  // ---------- Xano price helpers ----------
+  function parseXanoPrice(row) {
+    const raw = row?.PatientPay ?? row?.Price_w_NADAC;
+    if (raw == null || raw === '') return NaN;
+    const n = typeof raw === 'number'
+      ? raw
+      : parseFloat(String(raw).replace(/[^\d.\-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : NaN;
+  }
+  function hasValidXanoPrice(row) {
+    return Number.isFinite(parseXanoPrice(row));
+  }
+  // Cheapest priced row wins; if no row has a price, return the first row so
+  // its NDC is still available for the tier-2 Phoenix AS001 fallback.
+  function pickBestXanoRow(rows = []) {
+    if (!rows.length) return null;
+    const priced = rows.filter(hasValidXanoPrice);
+    if (priced.length) {
+      return priced.reduce((best, r) =>
+        parseXanoPrice(r) < parseXanoPrice(best) ? r : best
+      );
+    }
+    return rows[0];
   }
 
   // ---------- Strip trailing store numbers like "#1234", "No. 1234", "Store 1234" ----------
@@ -115,37 +236,22 @@
       .trim();
   }
 
-  // ---------- Allowed dispensing tiers (cross-reference against Xano rows) ----------
-  // The Xano response is the authoritative list. A quantity tier is only valid
-  // if at least one Active row for that exact MedDrugName carries that Quantity.
-  function getAllowedQuantities(rows, medDrugName) {
-    const name = String(medDrugName || '').trim();
-    if (!name || !Array.isArray(rows)) return [];
-    const out = new Set();
-    for (const row of rows) {
-      if (!isActiveRow(row)) continue;
-      if (String(row.MedDrugName || '').trim() !== name) continue;
-      const q = Number(row.Quantity);
-      if (Number.isFinite(q) && q > 0) out.add(q);
-    }
-    return [...out].sort((a, b) => a - b);
+  // ---------- SKU key (collapse Phoenix rows to one suggestion per SKU) ----------
+  function skuKey(row) {
+    const name = String(row?.MedDrugName || '').trim().toLowerCase();
+    const strength = String(row?.MedStrength ?? '').trim().toLowerCase();
+    const uom = String(row?.Uom ?? '').trim().toLowerCase();
+    const form = String(row?.DosageForm ?? '').trim().toLowerCase();
+    return `${name}||${strength}||${uom}||${form}`;
   }
-
-  // ---------- Local text filter for drugs ----------
-  function filterDrugsLocal(list = [], query = '') {
-    const q = String(query || '').trim().toLowerCase();
-    const base = (list || []).filter(isActiveRow); // ✅ only Active
-    if (!q) return base;
-    const tokens = q.split(/\s+/).filter(Boolean);
-    return base.filter(row => {
-      const hay = [
-        row.MedDrugName,
-        row.GenericName,
-        row.BrandName,
-        row.NDC || row.Ndc || row.ndc
-      ].map(v => String(v || '').toLowerCase()).join(' | ');
-      return tokens.every(tok => hay.includes(tok));
-    });
+  function skuLabel(row) {
+    const name = String(row?.MedDrugName || '').trim();
+    const strength = String(row?.MedStrength ?? '').trim();
+    const uom = String(row?.Uom ?? '').trim();
+    const form = String(row?.DosageForm ?? '').trim();
+    const strengthPart = strength ? `${strength}${uom ? ' ' + uom : ''}` : '';
+    const tail = [strengthPart, form].filter(Boolean).join(' · ');
+    return tail ? `${name} — ${tail}` : name;
   }
 
   // ---------- Inject CSS for disabled dropdowns ----------
@@ -166,65 +272,247 @@
     }
   }
 
-  // ---------- Location storage ----------
-  function saveLocationToLocalStorage(zip, city, state, radius, manual = false) {
-    localStorage.setItem('userZip', zip);
-    localStorage.setItem('userCity', city);
-    localStorage.setItem('userState', state);
-    localStorage.setItem('userRadius', radius);
-    if (manual) localStorage.setItem('userZipTimestamp', Date.now().toString());
-    else localStorage.removeItem('userZipTimestamp');
-  }
-  function loadLocationFromLocalStorage() {
-    const ts = localStorage.getItem('userZipTimestamp');
-    const expired = ts && (Date.now() - parseInt(ts, 10) > 24 * 60 * 60 * 1000);
-    if (expired) {
-      ['userZip', 'userCity', 'userState', 'userRadius', 'userZipTimestamp'].forEach(k => localStorage.removeItem(k));
-      return { zip: null, city: null, state: null, radius: null };
-    }
-    return {
-      zip: localStorage.getItem('userZip'),
-      city: localStorage.getItem('userCity'),
-      state: localStorage.getItem('userState'),
-      radius: localStorage.getItem('userRadius')
-    };
-  }
-  function ensureLocationDefaults() {
-    if (!userZip) userZip = '00000';
-    if (!userCity) userCity = 'Default City';
-    if (!userState) userState = 'Default State';
-    if (!userRadius) userRadius = '10';
-  }
-
-  // ---------- API: Xano (formulary) ----------
-  async function fetchDrugs(query = '') {
-    const key = (query ? String(query).toLowerCase() : '__ALL__');
+  // ---------- API: Phoenix PBM (full formulary drug search — feeds typeahead) ----------
+  async function fetchPhoenixDrugs(query = '') {
+    const q = String(query || '').trim();
+    if (!q) return [];
+    const key = q.toLowerCase();
     if (drugsCache.has(key)) return drugsCache.get(key);
     try {
-      const url = query ? `${XANO_BASE_URL}?q=${encodeURIComponent(query)}` : XANO_BASE_URL;
-      const r = await fetch(url);
+      const url = `${baseUrl}/CacheDrugData?name=${encodeURIComponent(q)}`;
+      const r = await fetch(url, { headers: PHOENIX_GET_HEADERS });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
-
-      const arrRaw = Array.isArray(data) ? data : [];
-      const arr = arrRaw.filter(isActiveRow); // ✅ cache only Active
-
+      const arr = Array.isArray(data)
+        ? data
+        : (Array.isArray(data?.Response) ? data.Response : []);
       drugsCache.set(key, arr);
       return arr;
     } catch (e) {
-      console.error('Error fetching drugs:', e);
+      console.error('Phoenix drug search failed:', e);
       return [];
     }
   }
 
-  // ---------- API: Phoenix PBM (competitor pharmacies) ----------
-  async function fetchPhoenixPrices({ ndc, quantity, zip, radius }) {
+  // ---------- API: Xano altScripts override map (special prices) ----------
+  // Loaded once. Builds three indexes:
+  //   xanoByKey: `${normalizedNdc}|${quantity}` -> row (exact tier lookup)
+  //   xanoByNdc: normalizedNdc -> row[]         (all active rows for that NDC)
+  //   xanoByNameStrength: `${generic}|${strength}` -> row[] (NDC-independent)
+  // None is ever used as the typeahead source.
+  async function loadXanoOverrides({ force = false } = {}) {
+    const fresh = xanoByKey && xanoByNdc && xanoByNameStrength &&
+                  (Date.now() - xanoLoadedAt) < XANO_TTL_MS;
+    if (fresh && !force) return xanoByKey;
+    if (xanoLoadPromise) return xanoLoadPromise;
+    xanoLoadPromise = (async () => {
+      try {
+        const r = await fetch(XANO_BASE_URL, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const rawAll = Array.isArray(data) ? data : [];
+        const rows = rawAll.filter(isActiveRow);
+
+        const map = new Map();
+        const byNdc = new Map();
+        const byNameStrength = new Map();
+        for (const row of rows) {
+          const ndc = normalizeNDC(row.NDC ?? row.Ndc ?? row.ndc);
+
+          // Name+strength index — NDC-independent, so a divergent/mistyped NDC
+          // on the Xano row can't hide the drug from the formulary check.
+          const nsKey = xanoNameStrengthKey(row);
+          if (nsKey) {
+            if (!byNameStrength.has(nsKey)) byNameStrength.set(nsKey, []);
+            byNameStrength.get(nsKey).push(row);
+          }
+
+          if (!ndc) continue;
+          if (!byNdc.has(ndc)) byNdc.set(ndc, []);
+          byNdc.get(ndc).push(row);
+
+          const qty = Number(row.Quantity);
+          if (!Number.isFinite(qty)) continue;
+          map.set(`${ndc}|${qty}`, row);
+        }
+        xanoByKey = map;
+        xanoByNdc = byNdc;
+        xanoByNameStrength = byNameStrength;
+        xanoLoadedAt = Date.now();
+        console.log(`%c[altScripts] Xano map built: ${byNameStrength.size} name+strength keys, ${byNdc.size} NDCs`, 'color:#2b6cb0');
+        return map;
+      } catch (e) {
+        console.error('Xano override load failed:', e);
+        xanoByKey = new Map();
+        xanoByNdc = new Map();
+        xanoByNameStrength = new Map();
+        xanoLoadedAt = Date.now();
+        return xanoByKey;
+      } finally {
+        // Clear the in-flight promise so the NEXT call after TTL can refetch
+        // instead of being pinned to this build forever (the stale-map bug).
+        xanoLoadPromise = null;
+      }
+    })();
+    return xanoLoadPromise;
+  }
+
+  // Pull just the digits out of a strength like "14 MG" -> "14".
+  function strengthDigits(v) {
+    const m = String(v ?? '').match(/[\d.]+/);
+    return m ? m[0] : '';
+  }
+
+  // Reduce a drug name to a comparable "generic + strength" identity that
+  // works whether strength lives in its own column or is baked into the name.
+  //   "TERIFLUNOMIDE 14 Mg Tablet" -> { generic:"teriflunomide", strength:"14" }
+  //   name="Teriflunomide", strength="14 MG"  -> same
+  // The generic is the leading run of letters before the first number, so the
+  // dosage form / units after the strength don't break the match.
+  function genericStrengthIdentity(rawName, rawStrength) {
+    const full = String(rawName ?? '').toLowerCase().trim();
+    // Strength: prefer an explicit column, else the first number in the name.
+    let strength = strengthDigits(rawStrength);
+    if (!strength) strength = strengthDigits(full);
+    // Generic: everything up to the first digit, letters/spaces only.
+    let generic = full.split(/\d/)[0]
+      .replace(/[^a-z\s-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { generic, strength };
+  }
+  function identityKey(rawName, rawStrength) {
+    const { generic, strength } = genericStrengthIdentity(rawName, rawStrength);
+    if (!generic) return '';
+    return `${generic}|${strength}`;
+  }
+
+  // NDC-independent identity for a Xano row. Strength may be in its own column
+  // OR embedded in MedDrugName — identityKey handles both.
+  function xanoNameStrengthKey(row) {
+    const name = row?.MedDrugName ?? row?.DrugName ?? row?.Drug_Name ?? row?.Name ?? row?.drug_name ?? '';
+    const strength = row?.Strength ?? row?.MedStrength ?? row?.strength ?? row?.Dose ?? '';
+    return identityKey(name, strength);
+  }
+  // Same identity, built from the SKU the user picked off the typeahead.
+  function skuNameStrengthKey(sku) {
+    return identityKey(sku?.name, sku?.strength);
+  }
+
+  // Returns the cheapest matching Xano override row for any of the given NDCs
+  // at the given quantity, or null. Requires loadXanoOverrides() to have run.
+  function findXanoOverride(ndcs = [], quantity) {
+    if (!xanoByKey || !Number.isFinite(Number(quantity))) return null;
+    const qty = Number(quantity);
+    const hits = [];
+    for (const raw of ndcs) {
+      const n = normalizeNDC(raw);
+      if (!n) continue;
+      const row = xanoByKey.get(`${n}|${qty}`);
+      if (row) hits.push(row);
+    }
+    return hits.length ? pickBestXanoRow(hits) : null;
+  }
+
+  // Fallback override: any active, validly-priced Xano row for any of the
+  // SKU's NDCs, REGARDLESS of quantity tier. This is what protects the NADAC
+  // contract price — if the drug is on the altScripts formulary at all, we
+  // surface its NADAC-based price instead of falling through to the Phoenix
+  // AS001 list price (which can be 40x higher, e.g. Teriflunomide $1077 vs
+  // $26.12). Returns the cheapest priced row, or null if none is priced.
+  function findXanoPriceByNdc(ndcs = []) {
+    if (!xanoByNdc) return null;
+    const candidates = [];
+    for (const raw of ndcs) {
+      const n = normalizeNDC(raw);
+      if (!n) continue;
+      const rows = xanoByNdc.get(n);
+      if (rows && rows.length) candidates.push(...rows);
+    }
+    const priced = candidates.filter(hasValidXanoPrice);
+    return priced.length ? pickBestXanoRow(priced) : null;
+  }
+
+  // Last-resort NADAC recovery: match the Xano formulary by drug name +
+  // strength when NO NDC lines up. This is what saves Teriflunomide when the
+  // $26.12 row is filed under an NDC Phoenix never returns for this SKU — the
+  // drug is unmistakably the same, so we honor its NADAC price rather than the
+  // AS001 list price. Cheapest priced row wins.
+  //
+  // FORM-AWARE: rows whose dosage form explicitly conflicts with the SKU's
+  // form are excluded, so the cream's price can never land on the gel.
+  function findXanoPriceByNameStrength(sku) {
+    if (!xanoByNameStrength) return null;
+    const key = skuNameStrengthKey(sku);
+    if (!key) return null;
+    const rows = xanoByNameStrength.get(key);
+    if (!rows || !rows.length) return null;
+    const skuForm = canonicalDosageForm(sku?.form);
+    const compatible = rows.filter(r => formsCompatible(skuForm, xanoRowForm(r)));
+    const priced = compatible.filter(hasValidXanoPrice);
+    return priced.length ? pickBestXanoRow(priced) : null;
+  }
+
+  // Every quantity Xano lists for any NDC in this SKU. This is the authoritative
+  // set of tiers the drug is offered at — the dropdown must never show a tier
+  // outside this list, even if Phoenix's MedPackSize suggests otherwise.
+  function getXanoQuantitiesForSKU(sku) {
+    if (!xanoByKey || !sku?.ndcs?.length) return [];
+    const ndcSet = new Set(sku.ndcs.map(normalizeNDC).filter(Boolean));
+    if (!ndcSet.size) return [];
+    const out = new Set();
+    for (const key of xanoByKey.keys()) {
+      const sep = key.lastIndexOf('|');
+      if (sep < 0) continue;
+      const ndc = key.slice(0, sep);
+      if (!ndcSet.has(ndc)) continue;
+      const qty = Number(key.slice(sep + 1));
+      if (Number.isFinite(qty) && qty > 0) out.add(qty);
+    }
+    return [...out].sort((a, b) => a - b);
+  }
+
+  // True if ANY of the SKU's NDCs appears in the Xano formulary at all (any
+  // quantity, priced or not). Used to decide whether a top-card price is
+  // allowed to come from Phoenix AS001. If the drug is an altScripts-covered
+  // SKU, AS001 list pricing must NOT be shown as the altScripts price.
+  //
+  // The name+strength branch is FORM-AWARE: a cream-only formulary must not
+  // make the gel look covered (and vice versa).
+  function skuIsOnXanoFormulary(sku) {
+    if (!sku?.ndcs?.length && !sku?.name) return false;
+    // NDC match first…
+    if (xanoByNdc && sku?.ndcs?.length) {
+      const byNdc = sku.ndcs.some(raw => {
+        const n = normalizeNDC(raw);
+        return n && xanoByNdc.has(n);
+      });
+      if (byNdc) return true;
+    }
+    // …then name+strength (+compatible form), so a divergent NDC can't sneak
+    // an AS001 list price onto the card for a drug that's plainly on the
+    // formulary — but a different dosage form doesn't count as coverage.
+    if (xanoByNameStrength) {
+      const key = skuNameStrengthKey(sku);
+      const rows = key ? xanoByNameStrength.get(key) : null;
+      if (rows && rows.length) {
+        const skuForm = canonicalDosageForm(sku?.form);
+        if (rows.some(r => formsCompatible(skuForm, xanoRowForm(r)))) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---------- API: Phoenix PBM (competitor pharmacies / AS001 fallback) ----------
+  // groupNum defaults to TPD001 (full market / competitors). Pass 'AS001' for
+  // the altScripts-network-only formulary used as the tier-2 price fallback.
+  async function fetchPhoenixPrices({ ndc, quantity, zip, radius, groupNum = 'TPD001' }) {
     const payload = {
       memberNumber: '01',
-      ndc: String(ndc || '').replace(/-/g, ''),
-      quantity: Number(quantity),
+      ndc: normalizeNDC(ndc),
+      quantity: Number(quantity) || 30,
       daysSupply: 3,
-      groupNum: 'TPD001',
+      groupNum,
       zip: zip || '00000',
       radius: radius || '10',
       maxRecords: 3000
@@ -284,9 +572,9 @@
       const price    = Number(p.Pricing?.PatientPay);
 
       return `
-        <div class="pharmacy-card1" data-pharmacy="${name}">
+        <div class="pharmacy-card1" data-pharmacy="${escapeHtml(name)}">
           <div class="pharmacy-details">
-            <h4>${name}</h4>
+            <h4>${escapeHtml(name)}</h4>
           </div>
           <div class="pharmacy-price">
             <h1 class="price">$${Number.isFinite(price) ? price.toFixed(2) : 'N/A'}</h1>
@@ -313,106 +601,53 @@
     if (quantityDropdown) quantityDropdown.disabled = true;
     injectDisabledDropdownStyles();
 
-    // ----- Location bootstrapping -----
-    function displayLocation(zip, city, state, radius) {
-      const zipEl = document.getElementById('location-zip');
-      const cityEl = document.getElementById('location-city');
-      const stateEl = document.getElementById('location-state');
-      const radEl = document.getElementById('radius');
-      if (zipEl) zipEl.innerText = zip || 'N/A';
-      if (cityEl) cityEl.innerText = city || 'N/A';
-      if (stateEl) stateEl.innerText = state || 'N/A';
-      if (radEl) radEl.innerText = radius || '10';
+    // ----- Floating labels (mirrors main.js behavior) -----
+    function updateFloatLabel(field) {
+      const label = field?.parentElement?.querySelector('label');
+      if (!label) return;
+      const hasValue = field.value && String(field.value).trim() !== '';
+      const hasFocus = document.activeElement === field;
+      if (hasValue || hasFocus) label.classList.add('label-float');
+      else label.classList.remove('label-float');
     }
-
-    const stored = loadLocationFromLocalStorage();
-    userZip = stored.zip; userCity = stored.city; userState = stored.state; userRadius = stored.radius;
-
-    if (!userZip || !userCity || !userState || !userRadius) {
-      (async function fetchLocationByIp() {
-        try {
-          const ip = (await (await fetch('https://api.ipify.org?format=json')).json()).ip;
-          const loc = await (await fetch(`https://ipapi.co/${ip}/json/`)).json();
-          userZip = loc.postal || '00000';
-          userCity = loc.city || 'Default City';
-          userState = loc.region || 'Default State';
-          userRadius = '10';
-          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, false);
-          displayLocation(userZip, userCity, userState, userRadius);
-        } catch (e) {
-          console.error('Error fetching location data:', e);
-          ensureLocationDefaults();
-          displayLocation(userZip, userCity, userState, userRadius);
-        }
-      })();
-    } else {
-      displayLocation(userZip, userCity, userState, userRadius);
+    function updateAllFloatLabels() {
+      [inputField, quantityDropdown].forEach(f => { if (f) updateFloatLabel(f); });
     }
-
-    // ----- Location form -----
-    const form = document.getElementById('update-location-form');
-    if (form) {
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const zip = document.getElementById('zip')?.value.trim();
-        let radius = document.getElementById('search-radius')?.value.trim();
-        const failBox = document.querySelector('.w-form-fail');
-        if (!zip) return;
-        if (!radius) radius = '10';
-
-        const errors = [];
-        if (!/^\d{5}(-\d{4})?$/.test(zip)) errors.push('Invalid ZIP code format. Use 12345 or 12345-6789.');
-        const rNum = Number(radius);
-        if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) errors.push('Invalid radius. Enter a number between 1 and 500.');
-
-        if (errors.length) {
-          if (failBox) { failBox.innerText = errors.join('\n'); failBox.style.display = 'block'; }
-          return;
-        } else if (failBox) { failBox.innerText = ''; failBox.style.display = 'none'; }
-
-        try {
-          const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
-          userCity = data.places?.[0]?.['place name'] || '';
-          userState = data.places?.[0]?.['state abbreviation'] || '';
-          userZip = zip;
-          userRadius = radius;
-
-          saveLocationToLocalStorage(userZip, userCity, userState, userRadius, true);
-          displayLocation(userZip, userCity, userState, userRadius);
-
-          if (currentNDC && Number.isFinite(currentQuantity)) {
-            await fetchAndRenderCompetitors({ ndc: currentNDC, quantity: currentQuantity });
-          }
-        } catch (err) {
-          console.error('Error fetching ZIP code data:', err);
-          displayLocation('Error', 'Error', 'Error', 'Error');
-        }
-      });
-
-      const zipInput = document.getElementById('zip');
-      if (zipInput) {
-        zipInput.addEventListener('input', debounce(async () => {
-          const zip = zipInput.value.trim();
-          let radius = document.getElementById('search-radius')?.value.trim() || '10';
-          if (!/^\d{5}(-\d{4})?$/.test(zip)) return;
-          const rNum = Number(radius);
-          if (!/^\d+$/.test(radius) || Number.isNaN(rNum) || rNum < 1 || rNum > 500) return;
-
-          try {
-            const data = await (await fetch(`https://api.zippopotam.us/us/${zip}`)).json();
-            const previewCity = data.places?.[0]?.['place name'] || '';
-            const previewState = data.places?.[0]?.['state abbreviation'] || '';
-            displayLocation(zip, previewCity, previewState, radius);
-          } catch (err) {
-            console.error('ZIP preview failed:', err);
-          }
-        }, 350));
+    [inputField, quantityDropdown].forEach(field => {
+      if (!field) return;
+      field.addEventListener('focus',  () => updateFloatLabel(field));
+      field.addEventListener('blur',   () => updateFloatLabel(field));
+      field.addEventListener('input',  () => updateFloatLabel(field));
+      field.addEventListener('change', () => updateFloatLabel(field));
+      if (field.tagName === 'INPUT') {
+        field.removeAttribute('placeholder');
+        new MutationObserver(() => {
+          if (field.hasAttribute('placeholder')) field.removeAttribute('placeholder');
+        }).observe(field, { attributes: true, attributeFilter: ['placeholder'] });
       }
-    }
+      const proto = Object.getPrototypeOf(field);
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (descriptor && descriptor.set) {
+        Object.defineProperty(field, 'value', {
+          get() { return descriptor.get.call(this); },
+          set(v) { descriptor.set.call(this, v); updateFloatLabel(this); },
+          configurable: true,
+        });
+      }
+      updateFloatLabel(field);
+    });
 
     // ----- Recents -----
+    // Corrupt localStorage (older script versions, other embeds) must never
+    // throw out of init or a search — fall back to an empty list instead.
+    function readRecentSearches() {
+      try {
+        const arr = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch (_) { return []; }
+    }
     function storeRecentSearch(drugName, details) {
-      let stored = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      let stored = readRecentSearches();
       const idx = stored.findIndex(it => it.name === drugName);
       if (idx >= 0) stored[idx] = { name: drugName, details };
       else {
@@ -428,10 +663,10 @@
     }
     function displayRecentSearches() {
       if (!recentSearchesList) return;
-      recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      recentSearches = readRecentSearches();
       recentSearchesList.innerHTML = (recentSearches || []).map(s => `
-        <div class="search-item" data-drug="${s.name}" data-details="${encodeURIComponent(JSON.stringify(s.details || {}))}">
-          ${s.name}<div class="clear-search" data-role="clear">x</div>
+        <div class="search-item" data-drug="${escapeHtml(s.name)}" data-details="${encodeURIComponent(JSON.stringify(s.details || {}))}">
+          ${escapeHtml(s.name)}<div class="clear-search" data-role="clear">x</div>
         </div>`).join('');
 
       if (!recentSearchesList._delegated) {
@@ -449,7 +684,8 @@
           }
 
           const drugName = item.dataset.drug;
-          const details = JSON.parse(decodeURIComponent(item.getAttribute('data-details') || '{}'));
+          let details = {};
+          try { details = JSON.parse(decodeURIComponent(item.getAttribute('data-details') || '{}')); } catch (_) {}
           [...recentSearchesList.querySelectorAll('.search-item')].forEach(i => i.classList.remove('active-search'));
           item.classList.add('active-search');
           if (inputField) inputField.value = drugName;
@@ -463,16 +699,64 @@
       }
     }
     function loadRecentSearches() {
-      recentSearches = JSON.parse(localStorage.getItem('recentSearches') || '[]');
+      recentSearches = readRecentSearches();
       displayRecentSearches();
     }
 
     // ---------- Suggestions ----------
-    function paintSuggestions(drugs) {
+    async function populateQuantityDropdown(sku) {
+      if (!quantityDropdown) return;
+      await loadXanoOverrides();
+      let quantities = getXanoQuantitiesForSKU(sku);
+      if (!quantities.length) {
+        const fallback = new Set([30, 60, 90]);
+        const pack = Number(sku?.packSize);
+        if (Number.isFinite(pack) && pack > 0) fallback.add(pack);
+        quantities = [...fallback].sort((a, b) => a - b);
+      }
+      quantityDropdown.innerHTML = '<option value=""></option>';
+      quantities.forEach(q => {
+        const o = document.createElement('option');
+        o.value = q;
+        o.textContent = q;
+        quantityDropdown.appendChild(o);
+      });
+      quantityDropdown.disabled = quantities.length === 0;
+    }
+
+    function groupBySKU(rows = []) {
+      const byKey = new Map();
+      for (const row of rows) {
+        if (!row?.MedDrugName) continue;
+        const key = skuKey(row);
+        const ndc = normalizeNDC(row.Ndc ?? row.NDC ?? row.ndc);
+        const pack = Number(row.MedPackSize);
+        const entry = byKey.get(key);
+        if (entry) {
+          if (ndc && !entry.ndcs.includes(ndc)) entry.ndcs.push(ndc);
+          if (!Number.isFinite(entry.packSize) && Number.isFinite(pack)) entry.packSize = pack;
+        } else {
+          byKey.set(key, {
+            name: row.MedDrugName,
+            strength: row.MedStrength ?? '',
+            uom: row.Uom ?? '',
+            form: row.DosageForm ?? '',
+            ndcs: ndc ? [ndc] : [],
+            packSize: Number.isFinite(pack) ? pack : null,
+            label: skuLabel(row)
+          });
+        }
+      }
+      return [...byKey.values()].sort((a, b) =>
+        a.label.localeCompare(b.label, 'en', { sensitivity: 'base' })
+      );
+    }
+
+    function paintSuggestions(skus) {
       if (!suggestionsDiv) return;
       suggestionsDiv.innerHTML = '';
 
-      if (!drugs || drugs.length === 0) {
+      if (!skus || skus.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'drug-option';
         empty.style.opacity = '0.7';
@@ -481,113 +765,97 @@
         return;
       }
 
-      const sorted = [...drugs].sort((a, b) =>
-        String(a.MedDrugName || '').localeCompare(String(b.MedDrugName || ''), 'en', { sensitivity: 'base' })
-      );
-
-      const unique = new Set();
-      sorted.forEach(drug => {
-        if (unique.has(drug.MedDrugName)) return;
-        unique.add(drug.MedDrugName);
-
+      skus.forEach(sku => {
         const opt = document.createElement('div');
         opt.className = 'drug-option';
-        opt.textContent = drug.MedDrugName;
+        opt.textContent = sku.label;
 
-        opt.addEventListener('click', () => {
-          if (inputField) inputField.value = drug.MedDrugName;
-
-          const quantities = getAllowedQuantities(drugs, drug.MedDrugName);
-
-          if (quantityDropdown) {
-            quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
-            quantities.forEach(q => {
-              const o = document.createElement('option');
-              o.value = q;
-              o.textContent = q;
-              quantityDropdown.appendChild(o);
-            });
-            quantityDropdown.disabled = quantities.length === 0;
-          }
-
+        opt.addEventListener('click', async () => {
+          currentSKU = sku;
+          if (inputField) inputField.value = sku.label;
           suggestionsDiv.innerHTML = '';
           if (errEl) errEl.textContent = '';
+          await populateQuantityDropdown(sku);
         });
 
         suggestionsDiv.appendChild(opt);
       });
     }
 
-    // ----- Show full list on focus -----
-    if (inputField) {
-      inputField.addEventListener('focus', debounce(async () => {
-        let all = drugsCache.get('__ALL__');
-        if (!all) all = await fetchDrugs('');
-        drugData = all;
-        const q = (inputField.value || '').trim();
-        const toShow = q ? filterDrugsLocal(all, q) : all;
-        paintSuggestions(toShow);
-      }, 50));
-    }
-
-    // ----- Typeahead: local filter first -----
+    const MIN_QUERY_LEN = 2;
     const triggerInputFieldChange = async (event) => {
       const query = (event.target.value || '').trim();
-      let all = drugsCache.get('__ALL__');
-      if (!all) all = await fetchDrugs('');
-      const filtered = filterDrugsLocal(all, query);
-      drugData = filtered;
-      paintSuggestions(filtered);
+      if (currentSKU && query !== currentSKU.label) {
+        currentSKU = null;
+        if (quantityDropdown) {
+          quantityDropdown.innerHTML = '<option value=""></option>';
+          quantityDropdown.disabled = true;
+        }
+      }
+      if (query.length < MIN_QUERY_LEN) {
+        if (suggestionsDiv) suggestionsDiv.innerHTML = '';
+        return;
+      }
+      const rows = await fetchPhoenixDrugs(query);
+      drugData = rows;
+      paintSuggestions(groupBySKU(rows));
     };
-    const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 120);
+    const debouncedTriggerInputFieldChange = debounce(triggerInputFieldChange, 180);
     if (inputField) inputField.addEventListener('input', debouncedTriggerInputFieldChange);
 
-    // ----- Run search only when a quantity is selected -----
+    const runSearchFromForm = async () => {
+      const drugName = (inputField?.value || '').trim();
+      const qty = parseInt(quantityDropdown?.value, 10);
+      if (!drugName || !Number.isFinite(qty) || qty <= 0) return;
+      currentQuantity = qty;
+      await handleDrugSearch(drugName, qty);
+    };
     if (quantityDropdown) {
-      quantityDropdown.addEventListener('change', async () => {
-        const drugName = (inputField?.value || '').trim();
-        const qty = parseInt(quantityDropdown.value, 10);
-        if (drugName && Number.isFinite(qty) && qty > 0) {
-          currentQuantity = qty;
-          await handleDrugSearch(drugName, qty);
-        }
+      quantityDropdown.addEventListener('change', runSearchFromForm);
+    }
+    if (searchBtn) {
+      searchBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        runSearchFromForm();
       });
     }
 
-    // ----- Recents quick fetch (no auto-search) -----
     const recentSearchesDataFetch = async (query, details = {}) => {
       try {
-        const drugs = await fetchDrugs(query); // already filtered to Active
+        const rows = await fetchPhoenixDrugs(query);
         if (suggestionsDiv) suggestionsDiv.innerHTML = '';
-        drugData = drugs;
+        drugData = rows;
 
-        const match = drugs.find(r => String(r.MedDrugName || '').toLowerCase() === query.toLowerCase());
-        const canonicalName = match?.MedDrugName || query;
-        const quantities = getAllowedQuantities(drugs, canonicalName);
+        const groups = groupBySKU(rows);
+        const savedKey = details?.sku?.key;
+        const saved = savedKey
+          ? groups.find(g => skuKey({
+              MedDrugName: g.name,
+              MedStrength: g.strength,
+              Uom: g.uom,
+              DosageForm: g.form
+            }) === savedKey)
+          : null;
+        const chosen = saved || groups[0] || null;
+        currentSKU = chosen;
 
-        if (quantityDropdown) {
-          quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
-          quantities.forEach(q => {
-            const o = document.createElement('option');
-            o.value = q; o.textContent = q;
-            quantityDropdown.appendChild(o);
-          });
-          quantityDropdown.disabled = quantities.length === 0;
-
+        if (chosen) {
+          await populateQuantityDropdown(chosen);
+          if (inputField) inputField.value = chosen.label;
           const preferred = Number(details.quantity);
-          if (Number.isFinite(preferred) && quantities.includes(preferred)) {
-            quantityDropdown.value = String(preferred);
+          if (Number.isFinite(preferred) && quantityDropdown) {
+            const hasOption = [...quantityDropdown.options].some(o => Number(o.value) === preferred);
+            if (hasOption) quantityDropdown.value = String(preferred);
           }
+        } else if (inputField) {
+          inputField.value = query;
         }
-
-        if (inputField) inputField.value = query;
       } catch (e) {
         console.error('Error in recentSearchesDataFetch:', e);
         if (errEl) errEl.textContent = 'Failed to fetch drug data.';
       }
     };
 
-    // ----- ALWAYS fetch + render competitors for the current selection -----
     async function fetchAndRenderCompetitors({ ndc, quantity }) {
       try {
         if (_loaderCount === 0) showLoader();
@@ -615,7 +883,7 @@
     }
 
     // ----- Main search (owns loader lifecycle) -----
-    async function handleDrugSearch(drugName, quantity) {
+    async function handleDrugSearch(_drugName, quantity = 30) {
       if (_loaderCount === 0) showLoader();
       await paintNextFrame();
       const t0 = performance.now();
@@ -623,33 +891,23 @@
       const pharmacyListDiv = document.getElementById('pinnedPharmacyList');
       try {
         quantity = parseInt(quantity, 10);
-        if (!drugName || !Number.isFinite(quantity) || quantity <= 0) {
-          if (errEl) errEl.textContent = 'Invalid search parameters.';
+        if (!currentSKU || !currentSKU.ndcs?.length ||
+            !Number.isFinite(quantity) || quantity <= 0) {
+          if (errEl) errEl.textContent = 'Pick a drug from the suggestions, then a quantity.';
           setResultsVisible(false);
           return;
         }
 
         currentQuantity = quantity;
 
-        // Cross-reference the quantity tier against Xano rows for this drug.
-        // Prevents ever dispatching a tier that is not present in the formulary.
-        const allowed = getAllowedQuantities(drugData, drugName);
-        if (!allowed.includes(quantity)) {
+        // Pull the override map fresh for each search so a price/row edit in
+        // Xano is reflected immediately, never served from a stale snapshot.
+        await loadXanoOverrides({ force: true });
+
+        const xanoAllowed = getXanoQuantitiesForSKU(currentSKU);
+        if (xanoAllowed.length && !xanoAllowed.includes(quantity)) {
           if (errEl) errEl.textContent =
-            `${drugName} is not offered in a ${quantity}-day supply.`;
-          if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
-          setResultsVisible(false);
-          return;
-        }
-
-        // Find exact row from prior fetch
-        const selectedDrug = (drugData || []).find(d =>
-          d?.MedDrugName === drugName && Number(d?.Quantity) === quantity
-        );
-
-        // Hard block: do not render if not Active
-        if (!selectedDrug || !isActiveRow(selectedDrug)) {
-          if (errEl) errEl.textContent = 'This drug is not currently active in the formulary.';
+            `${currentSKU.label} is not offered at a ${quantity}-day supply.`;
           if (pharmacyListDiv) pharmacyListDiv.innerHTML = '';
           setResultsVisible(false);
           return;
@@ -657,31 +915,138 @@
 
         if (errEl) errEl.textContent = '';
 
-        const ndcRaw = selectedDrug.NDC ?? selectedDrug.Ndc ?? selectedDrug.ndc ?? '';
-        const ndcClean = String(ndcRaw).replace(/-/g, '');
-        currentNDC = ndcClean;
+        // ---------- top-card price resolution ----------
+        // Tier 1:  Xano special price on ANY NDC at this EXACT quantity tier.
+        // Tier 1b: Xano NADAC price on ANY NDC, any tier — recovers the
+        //          contract price when the exact quantity tier isn't stored.
+        // Tier 1c: Xano NADAC price by drug NAME + STRENGTH (+ compatible
+        //          dosage FORM), when no NDC lines up at all (the
+        //          Teriflunomide case — $26.12 row filed under an NDC Phoenix
+        //          never returns for this SKU). Form-aware so the cream's
+        //          price can never land on the gel.
+        // Tier 2:  Phoenix AS001 cheapest — ONLY for SKUs NOT on the Xano
+        //          formulary by NDC *or* name+strength+form. A formulary SKU
+        //          must never show an AS001 list price as its altScripts price.
+        // Tier 3:  no top card.
+        let payText = 'N/A';
+        let priceSource = null;
+        let priceNdc = currentSKU.ndcs[0];
 
-        const rawPay = selectedDrug.PatientPay ?? selectedDrug.Price_w_NADAC ?? '';
-        const payText = (typeof rawPay === 'number')
-          ? `$${rawPay.toFixed(2)}`
-          : (String(rawPay).startsWith('$') ? String(rawPay) : (rawPay ? `$${rawPay}` : 'N/A'));
+        // Whether this drug is on the altScripts formulary by ANY means.
+        const onFormulary = skuIsOnXanoFormulary(currentSKU);
+
+        // ---- DIAGNOSTIC: dump what we're working with for this SKU ----
+        try {
+          console.groupCollapsed('%c[altScripts] price resolution', 'color:#2b6cb0;font-weight:bold');
+          console.log('SKU label:', currentSKU.label);
+          console.log('SKU name/strength/form:', currentSKU.name, '/', currentSKU.strength, '/', currentSKU.form,
+            '(canonical form:', canonicalDosageForm(currentSKU.form) || 'unknown', ')');
+          console.log('SKU NDCs (Phoenix):', currentSKU.ndcs);
+          console.log('quantity:', quantity);
+          console.log('Xano map loaded?', !!xanoByKey, '| byNdc size:', xanoByNdc?.size, '| byNameStrength size:', xanoByNameStrength?.size);
+          console.log('name+strength key for lookup:', skuNameStrengthKey(currentSKU));
+          console.log('onFormulary (NDC or name+strength+form)?', onFormulary);
+          const nsHit = findXanoPriceByNameStrength(currentSKU);
+          console.log('name+strength (form-compatible) Xano hit:', nsHit || '(none)');
+          console.groupEnd();
+        } catch (e) { console.warn('diagnostic block failed', e); }
+
+        // Tier 1 — exact NDC + quantity tier.
+        const xanoHit = findXanoOverride(currentSKU.ndcs, quantity);
+        if (xanoHit) {
+          const xanoPrice = parseXanoPrice(xanoHit);
+          if (Number.isFinite(xanoPrice)) {
+            payText = `$${xanoPrice.toFixed(2)}`;
+            priceSource = 'xano';
+            priceNdc = normalizeNDC(xanoHit.NDC ?? xanoHit.Ndc ?? xanoHit.ndc) || priceNdc;
+          }
+        }
+
+        // Tier 1b — NADAC price by NDC, any tier (formulary safeguard).
+        if (!priceSource) {
+          const xanoNdcHit = findXanoPriceByNdc(currentSKU.ndcs);
+          if (xanoNdcHit) {
+            const xanoPrice = parseXanoPrice(xanoNdcHit);
+            if (Number.isFinite(xanoPrice)) {
+              payText = `$${xanoPrice.toFixed(2)}`;
+              priceSource = 'xano-ndc';
+              priceNdc = normalizeNDC(xanoNdcHit.NDC ?? xanoNdcHit.Ndc ?? xanoNdcHit.ndc) || priceNdc;
+            }
+          }
+        }
+
+        // Tier 1c — NADAC price by name + strength + compatible form
+        // (NDC-divergence recovery).
+        if (!priceSource) {
+          const xanoNsHit = findXanoPriceByNameStrength(currentSKU);
+          if (xanoNsHit) {
+            const xanoPrice = parseXanoPrice(xanoNsHit);
+            if (Number.isFinite(xanoPrice)) {
+              payText = `$${xanoPrice.toFixed(2)}`;
+              priceSource = 'xano-name';
+              priceNdc = normalizeNDC(xanoNsHit.NDC ?? xanoNsHit.Ndc ?? xanoNsHit.ndc) || priceNdc;
+            }
+          }
+        }
+
+        // Tier 2 — Phoenix AS001, but ONLY if this SKU is not on the Xano
+        // formulary by any means. If it IS on formulary and we still have no
+        // price, the formulary row is missing a price and we must NOT
+        // substitute the AS001 list price (that's the $1077 bug).
+        if (!priceSource && priceNdc && !onFormulary) {
+          try {
+            const asRows = await fetchPhoenixPrices({
+              ndc: priceNdc,
+              quantity,
+              zip: userZip,
+              radius: userRadius,
+              groupNum: 'AS001'
+            });
+            const priced = asRows
+              .map(r => parseFloat(r?.Pricing?.PatientPay))
+              .filter(p => Number.isFinite(p) && p > 0)
+              .sort((a, b) => a - b);
+            if (priced.length) {
+              payText = `$${priced[0].toFixed(2)}`;
+              priceSource = 'phoenix-as001';
+            }
+          } catch (e) {
+            console.error('Phoenix AS001 fallback failed:', e);
+          }
+        }
+
+        // If the SKU is on formulary but we couldn't price it, surface a clear
+        // message rather than a misleading list price.
+        if (!priceSource && onFormulary && errEl) {
+          errEl.textContent =
+            `${currentSKU.label} is on the altScripts formulary but has no stored price for a ${quantity}-day supply.`;
+        }
+
+        const hasTopPrice = priceSource !== null;
+        currentNDC = priceNdc;
+
+        console.log(
+          `%c[altScripts] RESULT → ${payText} via ${priceSource || '(none)'} | onFormulary=${onFormulary}`,
+          'color:#fff;background:' + (priceSource === 'phoenix-as001' ? '#c53030' : '#2f855a') + ';padding:2px 6px;border-radius:3px'
+        );
 
         if (pharmacyListDiv) {
-          pharmacyListDiv.innerHTML = `
+          pharmacyListDiv.innerHTML = hasTopPrice ? `
             <div class="pharmacy-card"
                  data-pharmacy-name="altScripts"
                  data-price="${payText.replace(/^\$/, '')}"
-                 data-drug-name="${selectedDrug.MedDrugName}"
+                 data-drug-name="${escapeHtml(currentSKU.label)}"
                  data-quantity="${quantity}"
-                 data-ndc="${ndcClean}">
+                 data-ndc="${priceNdc}"
+                 data-price-source="${priceSource}">
               <h1 class="price">${payText}</h1>
               <h4>altScripts</h4>
               <p><!-- No address needed --></p>
             </div>
-          `;
+          ` : '';
         }
 
-        setResultsVisible(true);
+        setResultsVisible(hasTopPrice);
 
         const sd0  = document.getElementById('selected-drug-name');
         const sd1  = document.getElementById('selected-drug-name1');
@@ -692,33 +1057,42 @@
         const spn  = document.getElementById('selected-pharmacy-name');
         const spn1 = document.getElementById('selected-pharmacy-name1');
 
-        const drugLabel = selectedDrug.MedDrugName || 'Unknown Drug';
+        const drugLabel = currentSKU.label || currentSKU.name || 'Unknown Drug';
+        const topPharmName = hasTopPrice ? 'altScripts' : 'Not Available';
         if (sd0) sd0.textContent = drugLabel;
         if (sd1) sd1.textContent = drugLabel;
         if (sq0) sq0.textContent = quantity;
         if (sq1) sq1.textContent = String(quantity);
         if (sp)  sp.textContent  = payText;
         if (sp1) sp1.textContent = payText;
-        if (spn)  spn.textContent = 'altScripts';
-        if (spn1) spn1.textContent = 'altScripts';
+        if (spn)  spn.textContent = topPharmName;
+        if (spn1) spn1.textContent = topPharmName;
 
         initializePharmacyCardListeners_SingleCard();
         await paintNextFrame();
         await paintNextFrame();
 
-        storeAndDisplayRecent5Search(drugName, {
+        storeAndDisplayRecent5Search(currentSKU.name, {
           quantity,
           price: payText,
-          overallData: {
-            MedDrugName: selectedDrug.MedDrugName,
-            Quantity: quantity,
-            PatientPay: rawPay,
-            Ndc: ndcClean,
-            Active_status: selectedDrug.Active_status
+          sku: {
+            key: skuKey({
+              MedDrugName: currentSKU.name,
+              MedStrength: currentSKU.strength,
+              Uom: currentSKU.uom,
+              DosageForm: currentSKU.form
+            }),
+            name: currentSKU.name,
+            strength: currentSKU.strength,
+            uom: currentSKU.uom,
+            form: currentSKU.form,
+            ndcs: currentSKU.ndcs,
+            packSize: currentSKU.packSize,
+            label: currentSKU.label
           }
         });
 
-        await fetchAndRenderCompetitors({ ndc: ndcClean, quantity });
+        await fetchAndRenderCompetitors({ ndc: priceNdc, quantity });
 
       } catch (e) {
         console.error('handleDrugSearch error:', e);
@@ -735,6 +1109,9 @@
       const card = document.querySelector('.pharmacy-card');
       if (!card) return;
       card.classList.add('selected');
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => card.classList.add('card-visible'));
+      });
       card.addEventListener('click', (e) => {
         const sel  = e.currentTarget;
         const data = sel.dataset;
@@ -764,12 +1141,21 @@
     const quantityDropdownEl = document.getElementById('quantityDropdown');
     if (quantityDropdownEl) quantityDropdownEl.addEventListener('change', clearErr);
 
+    // ----- Close the suggestions dropdown on outside click -----
+    document.addEventListener('click', (e) => {
+      if (!suggestionsDiv) return;
+      if (inputField?.contains(e.target)) return;
+      if (suggestionsDiv.contains(e.target)) return;
+      suggestionsDiv.innerHTML = '';
+    });
+
     // ----- Init -----
     loadRecentSearches();
     if (quantityDropdown) {
-      quantityDropdown.innerHTML = '<option value="">Select quantity</option>';
+      quantityDropdown.innerHTML = '<option value=""></option>';
       quantityDropdown.disabled = true;
     }
+    loadXanoOverrides();
   });
 })();
 
