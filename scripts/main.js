@@ -591,7 +591,7 @@ const recentSearchesDataFetch = async (query, drugDetails) => {
             // Scope drugData to this drug so the dropdowns and the change-filters
             // only show its strengths/forms — and stay fully editable.
             drugData = variants;
-            currentNDC = variants[0].Ndc;
+            currentNDC = pickBestVariant(variants).Ndc;
             const dosages = new Set(), forms = new Set(), qtys = new Set();
             variants.forEach(d => {
                 dosages.add(`${d.MedStrength} ${d.Uom}`);
@@ -675,9 +675,41 @@ function debounce(func, delay) {
     return function (...args) { clearTimeout(timeoutId); timeoutId = setTimeout(() => func.apply(this, args), delay); };
 }
 
+// ── Manufacturer-first NDC selection ────────────────────────────────────────
+// RxLogic's name search mixes real manufacturer rows with repackager and
+// delisted NDCs that carry the same drug name but stale pricing data. Brand
+// Lipitor 20 MG, for example, comes back as 4 Viatris rows (IsBrand, WAC,
+// NADAC all set, AWP ~$24/tab) plus a dozen repackager rows (Preferred
+// Pharmaceuticals, PD-Rx, Quality Care…) with none of those fields and an AWP
+// of ~$3.64/tab. Pricing the first name/strength/form match sent a repackager
+// NDC no pharmacy stocks and showed $289 for a drug that adjudicates at $1,800.
+// Rank rows so a real manufacturer NDC always wins; ties keep RxLogic's order.
+function variantRank(d) {
+    let r = 0;
+    if (d?.IsBrand === true || d?.BrandNameCode === 'T') r += 4;
+    if (d?.NADAC != null) r += 2;
+    if (d?.WAC   != null) r += 1;
+    return r;
+}
+
+// The highest-ranked rows of a variant list (all of them if none stand out).
+function preferredVariants(variants) {
+    const rows = (variants || []).filter(Boolean);
+    if (!rows.length) return [];
+    const top = Math.max(...rows.map(variantRank));
+    return rows.filter(d => variantRank(d) === top);
+}
+
+// The single row to price from a list of candidates: highest rank, first wins ties.
+function pickBestVariant(variants) {
+    return preferredVariants(variants)[0] || null;
+}
+
 // Pick the best default quantity from a drug's variants.
 // Uses the most common MedPackSize across all variants of the same drug,
 // so a drug with entries for pack sizes [1, 30, 30, 100] defaults to 30.
+// (Deliberately counts every row, repackagers included: manufacturer rows skew
+// to bulk bottles, and preferring them here pushed generics to 1000-count.)
 function pickBestPackSize(variants) {
     const sizes = variants.map(d => parseInt(d.MedPackSize)).filter(s => s > 0);
     if (!sizes.length) return 30;
@@ -763,7 +795,6 @@ const triggerInputFieldChange = async (event) => {
                 option.dataset.ndc    = drug.Ndc;
                 option.addEventListener('click', () => {
                     inputField.value = drug.MedDrugName;
-                    currentNDC = drug.Ndc;
                     const dSet = new Set(), fSet = new Set();
                     drugs.filter(d => d.MedDrugName === drug.MedDrugName).forEach(d => {
                         dSet.add(`${d.MedStrength} ${d.Uom}`); fSet.add(d.DosageForm);
@@ -771,6 +802,7 @@ const triggerInputFieldChange = async (event) => {
                     renderDropdown(dosageDropdown, [...dSet]);
                     renderDropdown(formDropdown,   [...fSet]);
                     const variants = drugs.filter(d => d.MedDrugName === drug.MedDrugName);
+                    currentNDC = (pickBestVariant(variants) || drug).Ndc;
                     document.getElementById('quantity').value = pickBestPackSize(variants);
                     suggestionsDiv.innerHTML = '';
                     updateFieldLock();
@@ -1066,10 +1098,10 @@ async function showGenericAlternativesBanner(selectedDrug) {
 
     // Match on same strength AND form first, then fall back progressively
     const match =
-        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength && d.DosageForm === selectedDrug.DosageForm) ||
-        genericDrugs.find(d => d.MedStrength === selectedDrug.MedStrength) ||
-        genericDrugs.find(d => d.DosageForm  === selectedDrug.DosageForm)  ||
-        genericDrugs[0];
+        pickBestVariant(genericDrugs.filter(d => d.MedStrength === selectedDrug.MedStrength && d.DosageForm === selectedDrug.DosageForm)) ||
+        pickBestVariant(genericDrugs.filter(d => d.MedStrength === selectedDrug.MedStrength)) ||
+        pickBestVariant(genericDrugs.filter(d => d.DosageForm  === selectedDrug.DosageForm))  ||
+        pickBestVariant(genericDrugs);
     const altName = match.MedDrugName;
 
     // Inject keyframe animation once
@@ -1209,11 +1241,11 @@ function setText(id, v) { const el = document.getElementById(id); if (el) el.tex
 async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
     quantity = parseInt(document.getElementById('quantity').value) || 30;
 
-    let selectedDrug = drugData.find(drug =>
+    let selectedDrug = pickBestVariant(drugData.filter(drug =>
         drug.MedDrugName === drugName &&
         `${drug.MedStrength} ${drug.Uom}` === dosage &&
         drug.DosageForm === form
-    );
+    ));
 
     if (!selectedDrug && recentSearches) {
         const hit = recentSearches.find(drug =>
