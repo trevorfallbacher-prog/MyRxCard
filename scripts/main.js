@@ -899,8 +899,17 @@ const triggerInputFieldChange = async (event) => {
         let drugs = await fetchDrugs(query);
         let corrected = null;
         if (!drugs.length) {
-            // literal miss: try the spell-corrected word(s) before giving up
+            // literal miss: try the spell-corrected word(s) before giving up.
+            // The list fetch + retry takes a second or two, so say so instead
+            // of leaving the dropdown blank.
+            const wait = document.createElement('div');
+            wait.className = 'drug-suggest-hint';
+            wait.style.cssText = 'padding:8px 12px;font-size:12px;color:#5b6b7c;line-height:1.5;';
+            wait.textContent = `No matches for “${query}” — checking similar spellings…`;
+            suggestionsDiv.innerHTML = '';
+            suggestionsDiv.appendChild(wait);
             const cands = await correctQuery(query);
+            if (!cands.length && inputField.value.trim() === query) { suggestionsDiv.innerHTML = ''; return; }
             for (const cand of cands) {
                 if (inputField.value.trim() !== query) return;   // user kept typing
                 const hit = await fetchDrugs(cand);
@@ -908,7 +917,7 @@ const triggerInputFieldChange = async (event) => {
             }
         }
         if (inputField.value.trim() !== query) return;           // stale response
-        suggestionsDiv.innerHTML = '';
+        suggestionsDiv.innerHTML = '';                            // also clears the waiting line
         drugData = drugs;
         if (corrected) suggestionsDiv.appendChild(didYouMeanHint(query, corrected.word, corrected.alts));
         const uniqueDrugNames = new Set();
