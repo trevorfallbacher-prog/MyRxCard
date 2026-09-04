@@ -73,6 +73,8 @@ function updateFieldLock() {
 }
 // Disable on load
 lockableFields.forEach(f => { if (f) f.disabled = true; });
+// the quantity box is type=number; without step="any" browsers flag 2.4 as invalid
+if (quantityField) quantityField.setAttribute('step', 'any');
 let currentNDC = '';
 let recentSearches = [];
 let userZip = null;
@@ -711,7 +713,16 @@ function pickBestVariant(variants) {
 // (Deliberately counts every row, repackagers included: manufacturer rows skew
 // to bulk bottles, and preferring them here pushed generics to 1000-count.)
 function pickBestPackSize(variants) {
-    const sizes = variants.map(d => parseInt(d.MedPackSize)).filter(s => s > 0);
+    // Pack size is a decimal. Whole-number sizes truncate as before (28.35 g ->
+    // 28). A size under 1 is a per-pen/per-vial amount (Mounjaro: 0.5 mL per
+    // pen), and parseInt made it 0, dropped it, and fell back to 30 -> 30 mL
+    // = 60 pens, $16,900. Scale those by the pens-per-box count instead, so a
+    // 4-pen box defaults to 2 mL.
+    const sizes = variants.map(d => {
+        const n = parseFloat(d.MedPackSize);
+        if (!(n > 0)) return 0;
+        return n >= 1 ? Math.floor(n) : Math.round(n * (parseFloat(d.PackageQuantity) || 1) * 100) / 100;
+    }).filter(s => s > 0);
     if (!sizes.length) return 30;
     // Count frequency of each size
     const freq = new Map();
@@ -1239,7 +1250,9 @@ function collapseByChain(rows) {
 function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
 
 async function handleDrugSearch(drugName, dosage, form, quantity = 30) {
-    quantity = parseInt(document.getElementById('quantity').value) || 30;
+    // decimal quantities are real for injectables (2 mL = one 4-pen box);
+    // parseInt turned 0.5 into 0 and then into 30
+    quantity = parseFloat(document.getElementById('quantity').value) || 30;
 
     let selectedDrug = pickBestVariant(drugData.filter(drug =>
         drug.MedDrugName === drugName &&
