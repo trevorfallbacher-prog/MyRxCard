@@ -788,12 +788,129 @@ if (document.readyState === 'loading') {
     injectDaysSupplyToggle();
 }
 
+// ── Typo-tolerant search: Soundex + Metaphone + Damerau edit distance ────────
+// RxLogic's name search is a literal prefix match, so "lipator" returns nothing.
+// On a miss we spell-correct the first word against the NLM RxNorm display-name
+// list (13.6k terms, fetched once, lazily), retry the corrected word(s), and
+// label the results "Did you mean". Same machinery as the AAPS pricing search.
+function soundex(w){ w=(w||"").toLowerCase().replace(/[^a-z]/g,""); if(!w)return"";
+  const code={b:1,f:1,p:1,v:1,c:2,g:2,j:2,k:2,q:2,s:2,x:2,z:2,d:3,t:3,l:4,m:5,n:5,r:6};
+  let out=w[0].toUpperCase(),prev=code[w[0]]||0;
+  for(let i=1;i<w.length&&out.length<4;i++){ const c=code[w[i]]||0;
+    if(c&&c!==prev)out+=c; if(!"hw".includes(w[i]))prev=c; }
+  return (out+"000").slice(0,4); }
+function metaphone(w){
+  w=(w||"").toLowerCase().replace(/[^a-z]/g,""); if(!w)return"";
+  w=w.replace(/^(ae|gn|kn|pn|wr)/,m=>m[1]).replace(/^x/,"s").replace(/^wh/,"w");
+  let out="",i=0; const v="aeiou";
+  while(i<w.length&&out.length<6){
+    const c=w[i],p=w[i-1]||"",n=w[i+1]||"",n2=w[i+2]||"";
+    if(c===p&&c!=="c"){ i++; continue; }
+    if(v.includes(c)){ if(i===0)out+=c; }
+    else if(c==="b"){ if(!(i===w.length-1&&p==="m"))out+="b"; }
+    else if(c==="c"){ if(n==="i"&&n2==="a")out+="x"; else if(n==="h"){out+="x";i++;} else if("iey".includes(n))out+="s"; else out+="k"; }
+    else if(c==="d"){ if(n==="g"&&"iey".includes(n2)){out+="j";i++;} else out+="t"; }
+    else if(c==="g"){ if(n==="h"&&!v.includes(n2)){i++;} else if(n==="n"){} else if("iey".includes(n))out+="j"; else out+="k"; }
+    else if(c==="h"){ if(!(v.includes(p)&&!v.includes(n))&&!"csptg".includes(p))out+="h"; }
+    else if(c==="k"){ if(p!=="c")out+="k"; }
+    else if(c==="p"){ if(n==="h"){out+="f";i++;} else out+="p"; }
+    else if(c==="q"){ out+="k"; }
+    else if(c==="s"){ if(n==="h"){out+="x";i++;} else if(n==="i"&&(n2==="o"||n2==="a"))out+="x"; else out+="s"; }
+    else if(c==="t"){ if(n==="h"){out+="0";i++;} else if(n==="i"&&(n2==="o"||n2==="a"))out+="x"; else out+="t"; }
+    else if(c==="v"){ out+="f"; }
+    else if(c==="w"){ if(v.includes(n))out+="w"; }
+    else if(c==="x"){ out+="ks"; }
+    else if(c==="y"){ if(v.includes(n))out+="y"; }
+    else if(c==="z"){ out+="s"; }
+    else out+=c;
+    i++;
+  }
+  return out; }
+function edist(a,b,max){
+  if(Math.abs(a.length-b.length)>max)return max+1;
+  const al=a.length,bl=b.length,d=[];
+  for(let i=0;i<=al;i++){ d[i]=[i]; }
+  for(let j=0;j<=bl;j++) d[0][j]=j;
+  for(let i=1;i<=al;i++){ let rowMin=Infinity;
+    for(let j=1;j<=bl;j++){
+      const cost=a[i-1]===b[j-1]?0:1;
+      let x=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+cost);
+      if(i>1&&j>1&&a[i-1]===b[j-2]&&a[i-2]===b[j-1]) x=Math.min(x,d[i-2][j-2]+1);
+      d[i][j]=x; rowMin=Math.min(rowMin,x); }
+    if(rowMin>max)return max+1; }
+  return d[al][bl]; }
+
+let extTerms = null, extLoading = null, EXT_IDX = null;
+const loadExtTerms = () => extLoading || (extLoading =
+    fetch('https://rxnav.nlm.nih.gov/REST/Prescribe/displaynames.json')
+        .then(r => r.json())
+        .then(d => { extTerms = (d.displayTermsList && d.displayTermsList.term) || []; })
+        .catch(() => { extTerms = []; }));
+function extIdx() {
+    if (!EXT_IDX) {
+        const seen = new Set(); EXT_IDX = [];
+        for (const t of (extTerms || [])) {
+            const w = String(t).toLowerCase().split(/[\s,(]+/)[0].replace(/[^a-z0-9-]/g, '');
+            if (w.length < 3 || seen.has(w)) continue;
+            seen.add(w); EXT_IDX.push({ w, sx: soundex(w), mp: metaphone(w) });
+        }
+    }
+    return EXT_IDX;
+}
+// Best spelling corrections for the first word of a query, strongest first.
+// Requires a phonetic match AND a small edit distance (1 for short words, 2
+// for longer), so "lipator" -> lipitor but random words don't get "corrected".
+async function correctQuery(q) {
+    const qw = String(q || '').toLowerCase().split(/\s+/)[0].replace(/[^a-z0-9-]/g, '');
+    if (qw.length < 4) return [];
+    if (!extTerms) await loadExtTerms();
+    const qs = soundex(qw), qm = metaphone(qw), max = qw.length > 5 ? 2 : 1;
+    const scored = [];
+    for (const e of extIdx()) {
+        if (e.w === qw) return [];                       // spelled right; RxLogic just has nothing
+        const ph = (e.sx === qs ? 1 : 0) + (e.mp === qm ? 1 : 0);
+        if (!ph || Math.abs(e.w.length - qw.length) > max) continue;
+        const dd = edist(qw, e.w, max);
+        if (dd > max) continue;
+        scored.push({ w: e.w, s: ph * 10 - dd });
+    }
+    scored.sort((a, b) => b.s - a.s || a.w.localeCompare(b.w));
+    return scored.slice(0, 3).map(x => x.w);
+}
+function didYouMeanHint(typed, shown, alts) {
+    const hint = document.createElement('div');
+    hint.className = 'drug-suggest-hint';
+    hint.style.cssText = 'padding:8px 12px;font-size:12px;color:#5b6b7c;border-bottom:1px solid #e6ebf0;line-height:1.5;';
+    const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    let html = `Did you mean <b style="color:#2e6fb5">${esc(shown)}</b>? No matches for &ldquo;${esc(typed)}&rdquo; &mdash; showing results for ${esc(shown)}.`;
+    if (alts.length) html += ' Or try: ' + alts.map(a => `<a href="#" data-alt="${esc(a)}" style="color:#2e6fb5;text-decoration:underline;margin-left:4px">${esc(a)}</a>`).join('');
+    hint.innerHTML = html;
+    hint.querySelectorAll('a[data-alt]').forEach(a => a.addEventListener('click', (e) => {
+        e.preventDefault();
+        inputField.value = a.dataset.alt;
+        triggerInputFieldChange({ target: inputField });
+    }));
+    return hint;
+}
+
 const triggerInputFieldChange = async (event) => {
     const query = event.target.value.trim();
     if (query.length >= 3) {
-        const drugs = await fetchDrugs(query);
+        let drugs = await fetchDrugs(query);
+        let corrected = null;
+        if (!drugs.length) {
+            // literal miss: try the spell-corrected word(s) before giving up
+            const cands = await correctQuery(query);
+            for (const cand of cands) {
+                if (inputField.value.trim() !== query) return;   // user kept typing
+                const hit = await fetchDrugs(cand);
+                if (hit.length) { drugs = hit; corrected = { word: cand, alts: cands.filter(w => w !== cand) }; break; }
+            }
+        }
+        if (inputField.value.trim() !== query) return;           // stale response
         suggestionsDiv.innerHTML = '';
         drugData = drugs;
+        if (corrected) suggestionsDiv.appendChild(didYouMeanHint(query, corrected.word, corrected.alts));
         const uniqueDrugNames = new Set();
         drugs.forEach((drug) => {
             if (!uniqueDrugNames.has(drug.MedDrugName)) {
