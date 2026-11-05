@@ -316,15 +316,22 @@
   background-color: {{wf:Recent Search BG Hover|Dynamo}};
 }
 
-    /* Nav text (Language dropdown) follows the partner's Nav Text Color.
-       Empty field = invalid CSS value = rule ignored, so groups without
-       a value keep the default dark text. */
-    .div-block-89,
-    .div-block-89 .text-block-60,
+    /* Nav text (Language dropdown toggle) follows the partner's Nav Text Color.
+       Scoped to the closed toggle only; the open dropdown list keeps its own
+       dark text on its white panel. Empty field = rule ignored. */
     .div-block-89 .dropdown-toggle,
-    .div-block-89 .icon-2 {
+    .div-block-89 .dropdown-toggle .text-block-60,
+    .div-block-89 .dropdown-toggle .icon-2 {
       color: {{wf:Nav Text Color|Dynamo}};
+      background-color: transparent;
+    }
+    .div-block-89 {
       border-color: {{wf:Nav Text Color|Dynamo}};
+      background-color: transparent;
+    }
+    .div-block-89 .dropdown-list,
+    .div-block-89 .dropdown-list a {
+      color: #333;
     }
 
   </style>
