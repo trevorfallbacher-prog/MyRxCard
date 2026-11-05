@@ -323,7 +323,7 @@
     .div-block-89 .dropdown-toggle .text-block-60,
     .div-block-89 .dropdown-toggle .icon-2 {
       color: {{wf:Nav Text Color|Dynamo}};
-      background-color: transparent;
+      background-color: {{wf:Nav Button BG Color|Dynamo}};
     }
     .div-block-89 {
       border-color: {{wf:Nav Text Color|Dynamo}};
