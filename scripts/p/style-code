@@ -337,6 +337,8 @@
     .div-block-89 .dropdown-toggle .image-34 {
       content: url({{wf:Nav Language Icon|Dynamo}});
     }
+    /* keep the nav (and its open Language menu) above page widgets */
+    .left-nav.w-nav { z-index: 50; }
 
   </style>
 </head>
