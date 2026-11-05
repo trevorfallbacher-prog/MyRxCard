@@ -316,5 +316,29 @@
   background-color: {{wf:Recent Search BG Hover|Dynamo}};
 }
 
+    /* Nav text (Language dropdown toggle) follows the partner's Nav Text Color.
+       Scoped to the closed toggle only; the open dropdown list keeps its own
+       dark text on its white panel. Empty field = rule ignored. */
+    .div-block-89 .dropdown-toggle,
+    .div-block-89 .dropdown-toggle .text-block-60,
+    .div-block-89 .dropdown-toggle .icon-2 {
+      color: {{wf:Nav Text Color|Dynamo}};
+      background-color: {{wf:Nav Button BG Color|Dynamo}};
+    }
+    .div-block-89 {
+      border-color: {{wf:Nav Text Color|Dynamo}};
+      background-color: transparent;
+    }
+    .div-block-89 .dropdown-list,
+    .div-block-89 .dropdown-list a {
+      color: #333;
+    }
+    /* Optional dark globe for groups with a light filled button; empty field = default white icon */
+    .div-block-89 .dropdown-toggle .image-34 {
+      content: url({{wf:Nav Language Icon|Dynamo}});
+    }
+    /* keep the nav (and its open Language menu) above page widgets */
+    .left-nav.w-nav { z-index: 50; }
+
   </style>
 </head>
