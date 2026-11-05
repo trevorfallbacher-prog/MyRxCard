@@ -333,6 +333,10 @@
     .div-block-89 .dropdown-list a {
       color: #333;
     }
+    /* Optional dark globe for groups with a light filled button; empty field = default white icon */
+    .div-block-89 .dropdown-toggle .image-34 {
+      content: url({{wf:Nav Language Icon|Dynamo}});
+    }
 
   </style>
 </head>
